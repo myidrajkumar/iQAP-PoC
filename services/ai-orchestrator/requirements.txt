@@ -1,6 +1,5 @@
 fastapi
 uvicorn[standard]
 pydantic
-# For future use:
-# openai
-# requests
+# New dependency for RabbitMQ
+pika

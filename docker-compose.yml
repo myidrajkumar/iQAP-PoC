@@ -1,5 +1,5 @@
 services:
-  # The React Frontend service
+  # --- Frontend ---
   frontend:
     build: ./frontend
     ports:
@@ -11,19 +11,63 @@ services:
     depends_on:
       - ai-orchestrator
 
-  # The AI Orchestration Service (MCP Brain)
+  # --- Backend Services ---
   ai-orchestrator:
     build: ./services/ai-orchestrator
     ports:
       - "8000:8000"
     volumes:
       - ./services/ai-orchestrator:/app
-    # environment:
-    #   - OPENAI_API_KEY=your_key_here # For future use
+    env_file:
+      - .env
+    environment:
+      # Add this environment variable for immediate logging
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      - rabbitmq
 
-  # The Execution Agent
+  execution-orchestrator:
+    build: ./services/execution-orchestrator
+    volumes:
+      - ./services/execution-orchestrator:/app
+    env_file:
+      - .env
+    environment:
+      # Add this environment variable for immediate logging
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      - rabbitmq
+  
   execution-agent:
     build: ./services/execution-agent
     volumes:
       - ./services/execution-agent:/app
-    command: tail -f /dev/null
+    shm_size: '2gb'
+    env_file:
+      - .env
+    environment:
+      # Add this environment variable for immediate logging
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      - execution-orchestrator
+
+  # --- Infrastructure ---
+  postgres:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    env_file:
+      - .env
+
+  rabbitmq:
+    image: rabbitmq:3.12-management-alpine
+    ports:
+      - "5672:5672"   # For services
+      - "15672:15672" # For Management UI
+    env_file:
+      - .env
+
+volumes:
+  postgres_data:
