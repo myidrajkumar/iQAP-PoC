@@ -1,20 +1,24 @@
 import os
 import pika
 import json
+import httpx
+from openai import OpenAI
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 
-# Initialize the FastAPI app
+# --- Initialize ---
 app = FastAPI()
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+DISCOVERY_SERVICE_URL = "http://discovery-service:8001/discover"
 
 # --- RabbitMQ Configuration ---
-RABBITMQ_HOST = 'rabbitmq'
-RABBITMQ_USER = os.getenv('RABBITMQ_DEFAULT_USER', 'rabbit_user')
-RABBITMQ_PASS = os.getenv('RABBITMQ_DEFAULT_PASS', 'rabbit_password')
-credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASS)
+RABBITMQ_HOST = "rabbitmq"
+credentials = pika.PlainCredentials(
+    os.getenv("RABBITMQ_DEFAULT_USER"), os.getenv("RABBITMQ_DEFAULT_PASS")
+)
 
-# Configure CORS
+# --- CORS ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
@@ -23,53 +27,104 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 class GenerationRequest(BaseModel):
     requirement: str
+    target_url: str
+
 
 def publish_to_rabbitmq(message: dict):
-    """Publishes a message to the RabbitMQ queue."""
+    # ... (this function remains the same as v1.0) ...
     try:
-        connection = pika.BlockingConnection(pika.ConnectionParameters(host=RABBITMQ_HOST, credentials=credentials))
+        connection = pika.BlockingConnection(
+            pika.ConnectionParameters(host=RABBITMQ_HOST, credentials=credentials)
+        )
         channel = connection.channel()
-        channel.queue_declare(queue='test_generation_queue', durable=True)
+        channel.queue_declare(queue="test_generation_queue", durable=True)
         channel.basic_publish(
-            exchange='',
-            routing_key='test_generation_queue',
+            exchange="",
+            routing_key="test_generation_queue",
             body=json.dumps(message),
-            properties=pika.BasicProperties(
-                delivery_mode=2,  # make message persistent
-            ))
+            properties=pika.BasicProperties(delivery_mode=2),
+        )
         connection.close()
-        print(f" [x] Sent job to RabbitMQ: {message}")
+        print(f" [x] Sent job to RabbitMQ: {message.get('test_case_id')}")
     except pika.exceptions.AMQPConnectionError as e:
         print(f"ERROR: Could not connect to RabbitMQ: {e}")
-        raise HTTPException(status_code=503, detail="Could not connect to the messaging service.")
+        raise HTTPException(status_code=503, detail="Messaging service unavailable.")
+
+
+async def get_ui_blueprint(url: str) -> str:
+    """Calls the Discovery Service to get a UI blueprint."""
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                DISCOVERY_SERVICE_URL, json={"url": url}, timeout=60.0
+            )
+            response.raise_for_status()
+            return json.dumps(response.json(), indent=2)
+    except httpx.RequestError as e:
+        print(f"ERROR: Could not connect to Discovery Service: {e}")
+        raise HTTPException(status_code=503, detail="Discovery Service unavailable.")
+
+
+def call_llm_service(requirement: str, ui_blueprint: str) -> dict:
+    """Builds the MCP and calls the real OpenAI API."""
+    print("MCP: Building context and calling OpenAI...")
+    system_prompt = "You are an expert QA Automation Engineer. Your task is to convert a business requirement and a UI element blueprint into a structured JSON test case. You must return only a single, valid JSON object and nothing else."
+
+    user_prompt = f"""
+    Business Requirement: "{requirement}"
+    ---
+    UI Blueprint (discovered elements from the page):
+    {ui_blueprint}
+    ---
+    Generate a JSON test case with the following schema:
+    {{
+        "test_case_id": "string (e.g., TC-LOGIN-001)",
+        "objective": "string",
+        "steps": [
+            {{ "step": "integer", "action": "string (e.g., ENTER_TEXT, CLICK)", "target_element": "string (must be a logical_name from the blueprint)", "data": "string (use placeholders like [VALID_USERNAME])" }}
+        ]
+    }}
+    """
+
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        response_text = completion.choices.message.content
+        return json.loads(response_text)
+    except Exception as e:
+        print(f"ERROR: OpenAI API call failed: {e}")
+        raise HTTPException(
+            status_code=500, detail="Failed to generate test case from AI model."
+        )
 
 
 @app.post("/generate-test-case")
 async def generate_test_case(request: GenerationRequest):
-    """
-    Receives a requirement, simulates MCP/LLM, and publishes a job to RabbitMQ.
-    """
-    print("Orchestrator: Received request.")
-    
-    # In a real system, this is where you build the MCP and call the LLM.
-    # For now, we use the same mock response as the PoC.
-    mock_test_case = {
-        "test_case_id": "TC-LOGIN-001",
-        "objective": request.requirement,
-        "steps": [
-            {"step": 1, "action": "ENTER_TEXT", "target_element": "Username_Input", "data": "[VALID_USERNAME]"},
-            {"step": 2, "action": "ENTER_TEXT", "target_element": "Password_Input", "data": "[VALID_PASSWORD]"},
-            {"step": 3, "action": "CLICK", "target_element": "Login_Button"}
-        ]
+    print(f"Orchestrator: Received request for URL: {request.target_url}")
+
+    # 1. Get UI blueprint from the Discovery Service
+    ui_blueprint = await get_ui_blueprint(request.target_url)
+
+    # 2. Call the real LLM with the context
+    generated_test_case = call_llm_service(request.requirement, ui_blueprint)
+
+    # 3. Publish the job to RabbitMQ
+    publish_to_rabbitmq(generated_test_case)
+
+    return {
+        "message": "Test Case Generation Job Published!",
+        "test_case_id": generated_test_case.get("test_case_id"),
     }
-    
-    # Publish the generated test case to the queue for processing
-    publish_to_rabbitmq(mock_test_case)
-    
-    return {"message": "Test Case Generation Job Published!", "job_details": mock_test_case}
+
 
 @app.get("/")
 def read_root():
-    return {"message": "iQAP AI Orchestrator v1.0 is running."}
+    return {"message": "iQAP AI Orchestrator v2.0 is running."}

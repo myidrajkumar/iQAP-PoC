@@ -1,2 +1,4 @@
 playwright
 pika
+# New dependency for PostgreSQL
+psycopg2-binary

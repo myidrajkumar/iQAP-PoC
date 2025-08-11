@@ -5,44 +5,48 @@ body {
   padding: 20px;
   color: #333;
 }
-
 .container {
-  max-width: 800px;
+  max-width: 1200px;
   margin: 0 auto;
   padding: 20px;
   background-color: #fff;
   border-radius: 8px;
   box-shadow: 0 4px 12px rgba(0,0,0,0.1);
 }
-
 header h1 {
   color: #1a2a4d;
   text-align: center;
   margin-bottom: 2rem;
 }
-
-.form {
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1.5fr;
+  gap: 2rem;
+}
+.form-left, .form-right {
   display: flex;
   flex-direction: column;
 }
-
-.form label {
+label {
   font-weight: 600;
+  margin-top: 1rem;
   margin-bottom: 8px;
   color: #555;
 }
-
-.form textarea {
+input[type="text"], textarea {
   font-family: inherit;
   font-size: 1rem;
   padding: 10px;
   border-radius: 4px;
   border: 1px solid #ccc;
-  margin-bottom: 1rem;
-  resize: vertical;
+  width: 100%;
+  box-sizing: border-box;
 }
-
-.form button {
+textarea {
+  resize: vertical;
+  min-height: 80px;
+}
+button {
   padding: 12px 20px;
   font-size: 1rem;
   font-weight: 600;
@@ -52,42 +56,56 @@ header h1 {
   border-radius: 4px;
   cursor: pointer;
   transition: background-color 0.2s;
+  margin-top: 1.5rem;
 }
-
-.form button:hover {
+button:hover {
   background-color: #0056b3;
 }
-
-.form button:disabled {
+button:disabled {
   background-color: #a9a9a9;
   cursor: not-allowed;
 }
-
-.result {
-  margin-top: 2rem;
-  padding: 15px;
-  background-color: #eef1f4;
-  border-radius: 4px;
-}
-
-.result h2 {
+.refresh-btn {
+  background-color: #6c757d;
+  align-self: flex-end;
   margin-top: 0;
-  color: #1a2a4d;
+  margin-bottom: 1rem;
+  padding: 8px 15px;
 }
-
-.result pre {
-  background-color: #fdfdfd;
-  padding: 10px;
-  border-radius: 4px;
-  white-space: pre-wrap;
-  word-wrap: break-word;
+.refresh-btn:hover {
+  background-color: #5a6268;
 }
-
-.error {
+.results-table-container {
+  overflow-y: auto;
+  max-height: 400px;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+th, td {
+  border: 1px solid #ddd;
+  padding: 8px;
+  text-align: left;
+}
+th {
+  background-color: #eef1f4;
+  position: sticky;
+  top: 0;
+}
+.status-badge {
+  padding: 4px 8px;
+  border-radius: 12px;
+  font-size: 0.8rem;
+  font-weight: bold;
+  color: #fff;
+}
+.status-pass { background-color: #28a745; }
+.status-fail { background-color: #dc3545; }
+.status, .error {
   margin-top: 1rem;
-  color: #d9534f;
-  background-color: #f2dede;
-  border: 1px solid #ebccd1;
   padding: 10px;
   border-radius: 4px;
 }
+.status { color: #004085; background-color: #cce5ff; border: 1px solid #b8daff; }
+.error { color: #d9534f; background-color: #f2dede; border: 1px solid #ebccd1; }

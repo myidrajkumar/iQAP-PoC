@@ -8,8 +8,10 @@ services:
       - ./frontend/src:/app/src
     environment:
       - REACT_APP_API_URL=http://localhost:8000
+      - REACT_APP_REPORTING_URL=http://localhost:8002 # New URL for reporting
     depends_on:
       - ai-orchestrator
+      - reporting-service
 
   # --- Backend Services ---
   ai-orchestrator:
@@ -18,38 +20,54 @@ services:
       - "8000:8000"
     volumes:
       - ./services/ai-orchestrator:/app
-    env_file:
-      - .env
+    env_file: .env
     environment:
-      # Add this environment variable for immediate logging
       - PYTHONUNBUFFERED=1
     depends_on:
       - rabbitmq
+      - discovery-service
+
+  discovery-service: # NEW SERVICE
+    build: ./services/discovery-service
+    ports:
+      - "8001:8001"
+    shm_size: '2gb'
+    environment:
+      - PYTHONUNBUFFERED=1
 
   execution-orchestrator:
     build: ./services/execution-orchestrator
     volumes:
       - ./services/execution-orchestrator:/app
-    env_file:
-      - .env
+    env_file: .env
     environment:
-      # Add this environment variable for immediate logging
       - PYTHONUNBUFFERED=1
     depends_on:
       - rabbitmq
-  
+
   execution-agent:
     build: ./services/execution-agent
     volumes:
       - ./services/execution-agent:/app
     shm_size: '2gb'
-    env_file:
-      - .env
+    env_file: .env
     environment:
-      # Add this environment variable for immediate logging
       - PYTHONUNBUFFERED=1
     depends_on:
       - execution-orchestrator
+      - postgres
+
+  reporting-service: # NEW SERVICE
+    build: ./services/reporting-service
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./services/reporting-service:/app
+    env_file: .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      - postgres
 
   # --- Infrastructure ---
   postgres:
@@ -58,16 +76,14 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    env_file:
-      - .env
+    env_file: .env
 
   rabbitmq:
     image: rabbitmq:3.12-management-alpine
     ports:
-      - "5672:5672"   # For services
-      - "15672:15672" # For Management UI
-    env_file:
-      - .env
+      - "5672:5672"
+      - "15672:15672"
+    env_file: .env
 
 volumes:
   postgres_data:
