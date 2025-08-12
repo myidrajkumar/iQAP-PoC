@@ -1,5 +1,6 @@
 import os
 import psycopg2
+import time
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from psycopg2.extras import RealDictCursor
@@ -16,13 +17,32 @@ DB_HOST = "postgres"
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 def get_db_connection():
-    """Establishes and returns a database connection."""
-    try:
-        conn = psycopg2.connect(dbname=DB_NAME, user=DB_USER, password=DB_PASS, host=DB_HOST)
-        return conn
-    except psycopg2.OperationalError as e:
-        print(f"ERROR: Could not connect to database: {e}")
-        raise HTTPException(status_code=503, detail="Database service unavailable.")
+    """Establishes and returns a database connection with retry logic."""
+    max_retries = 30
+    retry_delay = 1
+
+    for attempt in range(max_retries):
+        try:
+            conn = psycopg2.connect(
+                dbname=DB_NAME, user=DB_USER, password=DB_PASS, host=DB_HOST
+            )
+            return conn
+        except psycopg2.OperationalError as e:
+            if attempt < max_retries - 1:
+                print(
+                    f"Database connection attempt {attempt + 1} failed. "
+                    f"Retrying in {retry_delay} seconds..."
+                )
+                time.sleep(retry_delay)
+                continue
+            else:
+                print(
+                    f"ERROR: Could not connect to database after "
+                    f"{max_retries} attempts: {e}"
+                )
+                raise HTTPException(
+                    status_code=503, detail="Database service unavailable."
+                )
 
 @app.on_event("startup")
 def startup_event():
