@@ -54,7 +54,7 @@ services:
     env_file: .env
     environment:
       - PYTHONUNBUFFERED=1
-      - HEADLESS=false
+      - HEADLESS=true
     depends_on:
       - execution-orchestrator
       - postgres
