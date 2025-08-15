@@ -13,7 +13,6 @@ DB_NAME = os.getenv("POSTGRES_DB")
 DB_USER = os.getenv("POSTGRES_USER")
 DB_PASS = os.getenv("POSTGRES_PASSWORD")
 DB_HOST = "postgres"
-# Check the environment variable for headless mode. Default to true (no UI).
 IS_HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
 
 
@@ -68,18 +67,33 @@ def find_element_locator(page, target_name: str, ui_blueprint: list):
 # --- Test Runner Function ---
 def run_test_case(test_case_json: dict):
     """
-    Executes a test case with debugging features: headed mode and screenshot on failure.
+    Executes a test case with robust parsing, detailed logging, and debugging features.
     """
-    test_case_id_base = test_case_json.get("test_case_id", "UNKNOWN_TC")
-    ui_blueprint = test_case_json.get("ui_blueprint", [])
-    target_url = test_case_json.get("target_url", "https://www.saucedemo.com")
+    # --- ROBUST JSON PARSING AND LOGGING ---
+    print(
+        f"--- Raw JSON Received by Agent ---\n{json.dumps(test_case_json, indent=2)}\n---------------------------------"
+    )
 
-    parameter_sets = test_case_json.get("parameters", [])
+    # Intelligently find the objective, checking for common variations
+    objective = (
+        test_case_json.get("objective")
+        or test_case_json.get("test_objective")
+        or "Objective not found in AI response"
+    )
+
+    # Intelligently find the parameter sets
+    parameter_sets = test_case_json.get("parameters") or test_case_json.get(
+        "parameter_sets", []
+    )
     if not parameter_sets:
         print(
             "[WARNING] AI did not provide a parameter set. Using a default empty set."
         )
         parameter_sets = [{"dataset_name": "default_fallback", "data": {}}]
+
+    test_case_id_base = test_case_json.get("test_case_id", "UNKNOWN_TC")
+    ui_blueprint = test_case_json.get("ui_blueprint", [])
+    target_url = test_case_json.get("target_url", "https://www.saucedemo.com")
 
     for params in parameter_sets:
         dataset_name = params.get("dataset_name", "default")
@@ -92,7 +106,6 @@ def run_test_case(test_case_json: dict):
 
         try:
             with sync_playwright() as p:
-                # Use the IS_HEADLESS variable and add slow_mo for better debugging visibility
                 browser = p.chromium.launch(
                     headless=IS_HEADLESS, slow_mo=500 if not IS_HEADLESS else 0
                 )
@@ -104,7 +117,6 @@ def run_test_case(test_case_json: dict):
                     target_name = step.get("target_element")
                     data_key = step.get("data_key")
 
-                    # Correctly use the data from the current parameter set
                     data_to_use = dataset.get(data_key, "") if data_key else ""
 
                     print(
@@ -153,8 +165,7 @@ def run_test_case(test_case_json: dict):
         except Exception as e:
             print(f"[FAIL] Test run finished with an unhandled error: {e}")
             status = "FAIL"
-            # Screenshot on failure
-            if page:
+            if page and not page.is_closed():
                 try:
                     screenshot_path = (
                         f"debug/failure_{run_id}_{time.strftime('%Y%m%d-%H%M%S')}.png"
@@ -165,10 +176,10 @@ def run_test_case(test_case_json: dict):
                     print(f"Failed to take screenshot: {screenshot_error}")
         finally:
             print(f"--- Test Run Finished with Status: {status} ---")
+            # Use the robustly parsed objective
+            final_objective = objective + f" ({dataset_name})"
             write_result_to_db(
-                objective=test_case_json.get("objective", "N/A") + f" ({dataset_name})",
-                status=status,
-                test_case_id=run_id,
+                objective=final_objective, status=status, test_case_id=run_id
             )
 
 
@@ -202,7 +213,7 @@ def main():
             channel.basic_qos(prefetch_count=1)
             channel.basic_consume(queue="execution_queue", on_message_callback=callback)
 
-            print(" [*] Execution Agent waiting for test jobs. To exit press CTRL+C")
+            print(" [*] Execution Agent waiting for test jobs. To exit press CTRL-C")
             channel.start_consuming()
 
         except (
