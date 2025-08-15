@@ -1,93 +1,58 @@
-# iQAP - Intelligent Quality Assurance Platform v2.0
+# iQAP - Intelligent Quality Assurance Platform
 
-This repository contains the full project codebase for the **iQAP v2.0**. This version evolves the platform from a proof-of-concept into a feature-complete application by implementing our core roadmap items.
+Welcome to iQAP. This project is now a powerful demonstration of how AI can be holistically integrated into the QA lifecycle, moving beyond simple test generation to include visual validation, intelligent self-healing, and dynamic data parameterization.
 
-It now features a dynamic discovery service, real AI integration, persistent data storage with a reporting API, and an enhanced user interface to view results.
+## New Features
 
-## New Features in v2.0
+1.  **Google Gemini Integration:** The AI core has been upgraded from OpenAI to **Google's Gemini Pro API**, leveraging its advanced reasoning for more accurate and context-aware test case generation.
 
-*   **Real LLM Integration:** Connects to **OpenAI's API** to generate test cases dynamically based on real-time context. The mocked response is gone.
-*   **Live Discovery Service:** A new microservice that can **crawl any target URL** in real-time to generate a "UI Blueprint," which is then fed to the AI for context-aware test generation.
-*   **PostgreSQL Database Persistence:** A new **Reporting Service** and updated **Execution Agent** work together to save every test run result (Pass/Fail, timestamp, objective) to a PostgreSQL database.
-*   **Enhanced Frontend:** The UI now features a results table that displays the history of all test runs, allowing users to see the outcome of their generated tests.
+2.  **Visual Regression Testing:** The platform can now detect visual bugs. The Execution Agent takes screenshots, compares them against approved baselines stored in **MinIO Object Storage**, and reports any visual discrepancies.
 
-## Architecture Diagram (v2.0)
+3.  **Enhanced Self-Healing Engine:** The self-healing logic is no longer hardcoded. When a primary UI locator fails, the agent now intelligently queries the full **UI Blueprint** (from the Discovery Service) to find the element based on other attributes, making it dramatically more resilient.
 
-The architecture is now more sophisticated, with dedicated services for discovery and reporting.
+4.  **AI-Driven Test Data Parameterization:** We have moved beyond static test data. The Gemini model now generates multiple data sets for a single test case (e.g., a valid user, a locked-out user), and the Execution Agent automatically runs the test multiple times with these different parameters.
 
-![iQAP v2.0 Architecture Diagram](./docs/iqap-architecture-v2.svg)
-*(**Note:** You will need to generate this new SVG/PNG image using the updated Mermaid code below and place it in your `docs` folder.)*
+5.  **CI/CD Webhook Integration:** A new API endpoint (`/webhook/run-suite`) has been added to the AI Orchestrator, allowing external systems like **Jenkins or GitHub Actions** to trigger test runs automatically, enabling true continuous testing.
 
-```mermaid
-graph TD
-    subgraph "User Interaction"
-        A["Web Frontend (UI)"]
-    end
+## Architecture Diagram
 
-    subgraph "Core Logic"
-        B["AI Orchestrator"]
-        C["Discovery Service"]
-        D["Execution Orchestrator"]
-        E["Execution Agent"]
-        F["Reporting Service"]
-    end
+The architecture now incorporates MinIO for object storage and highlights the new webhook integration path.
 
-    subgraph "Infrastructure"
-        G["RabbitMQ"]
-        H["PostgreSQL"]
-        I["OpenAI API"]
-    end
-    
-    A -- "POST /generate-test(url, req)" --> B
-    B -- "POST /discover(url)" --> C
-    C -- "Returns UI Blueprint" --> B
-    B -- "Calls for intelligence" --> I
-    I -- "Returns structured test case" --> B
-    B -- "Publishes Job" --> G
-    D -- "Consumes & Dispatches Job" --> G
-    E -- "Consumes & Executes Test" --> G
-    E -- "Writes result to" --> H
-    A -- "GET /results" --> F
-    F -- "Reads results from" --> H
+![iQAP Architecture Diagram](./docs/iqap-architecture.svg)
+
+## Project Structure
+
+
 ```
-
-## Project Structure (v2.0)
-
-Note the addition of the `discovery-service` and `reporting-service`.
-
-```iQAP-v2.0/
-├── .env                          # Environment variables (NOW INCLUDES OPENAI_API_KEY)
-├── docker-compose.yml            # Updated orchestration file
+iQAP/
+├── .env
+├── docker-compose.yml
 ├── docs/
-│   └── iqap-architecture-v2.svg
+│   └── iqap-architecture.svg
 ├── frontend/
-│   └── ... (App.js and App.css are updated)
+│   └── ... 
 └── services/
     ├── ai-orchestrator/
-    │   └── ... (main.py is updated)
-    ├── discovery-service/          # NEW SERVICE
-    │   ├── Dockerfile
-    │   ├── requirements.txt
-    │   └── main.py
+    │   └── ... 
+    ├── discovery-service/
+    │   └── ... 
     ├── execution-orchestrator/
-    │   └── ... (no changes)
+    │   └── ... 
     ├── execution-agent/
-    │   └── ... (agent.py is updated)
-    └── reporting-service/          # NEW SERVICE
-        ├── Dockerfile
-        ├── requirements.txt
-        └── main.py
+    │   └── ... 
+    └── reporting-service/
+        └── ... 
 ```
 
 ## Prerequisites
 
 *   [Docker](https://www.docker.com/products/docker-desktop/) installed and running.
-*   An **OpenAI API Key**. You can get one from [platform.openai.com](https://platform.openai.com/).
+*   A **Google Gemini API Key**.
 
 ## Setup & Running Instructions
 
 ### Step 1: Update the `.env` Configuration File
-Your `.env` file now requires your OpenAI API key.
+Place your Google API key and credentials for MinIO service.
 
 ```ini
 # PostgreSQL Configuration
@@ -99,40 +64,44 @@ POSTGRES_PASSWORD=iqap_password
 RABBITMQ_DEFAULT_USER=rabbit_user
 RABBITMQ_DEFAULT_PASS=rabbit_password
 
-# OpenAI API Key - REPLACE WITH YOUR KEY
-OPENAI_API_KEY="sk-..."
+# Google Gemini API Key - REPLACE WITH YOUR KEY
+GOOGLE_API_KEY="google_api_key_here"
+
+# MinIO Object Storage Configuration
+MINIO_ROOT_USER=minioadmin
+MINIO_ROOT_PASSWORD=minioadmin
 ```
-**Important:** Paste your actual secret key where it says `"sk-..."`.
 
 ### Step 2: Build and Run the Platform
-Open a terminal in the root `iQAP-v2.0/` directory and run the following command to build all the new and updated services.
+Open a terminal in the root `iQAP/` directory and run the following command to build all services.
 
 ```bash
 docker-compose up --build -d
 ```
 
-### Step 3: Check Container Status
-Confirm all services, including the new `discovery-service` and `reporting-service`, are running:
+### Step 3: Create the MinIO Bucket
+After the services start, create a "bucket" in MinIO to store the visual regression screenshots.
 
-```bash
-docker-compose ps
-```
+*   Open your browser to the MinIO console: **`http://localhost:9001`**
+*   Login with the credentials from `.env` file (`minioadmin` / `minioadmin`).
+*   Click the "Create Bucket" button.
+*   Name the bucket **`visual-baselines`** and click "Create Bucket".
 
-## How to Use the v2.0 Platform
+## How to Use the iQAP Platform
 
-The user experience is now much richer.
+*   **Generate a Test:** Go to **`http://localhost:3000`**. Use the UI to generate a test for `https://www.saucedemo.com`.
+*   **Observe the Flow:** The test will run in the background. Check the `docker-compose logs -f execution-agent` to see its progress. The first time it runs, it will save a "baseline" screenshot.
+*   **View Results:** Click "Refresh Results" on the UI to see the outcome saved in the database.
 
-*   **Step 1: Navigate to the UI**
-    *   Open your web browser to: **`http://localhost:3000`**
-    *   You will see a new input field for the Target URL and a table showing test results.
+## (Future Roadmap)
 
-*   **Step 2: Generate a Real Test Case**
-    *   Leave the default Target URL as `https://www.saucedemo.com`.
-    *   Click the **"Generate & Run Test"** button.
-    *   This will trigger the full architectural flow: the Discovery Service will crawl the URL, the AI Orchestrator will call the real OpenAI API with that context, and the job will be published to RabbitMQ.
-
-*   **Step 3: Observe the Outcome**
-    *   The test will be executed in the background by the Execution Agent.
-    *   Click the **"Refresh Results"** button on the UI. You will see a new entry appear at the top of the table with the status of the test run (e.g., "PASS" or "FAIL").
-
-This completes the end-to-end vision of the iQAP platform!
+1.  **Cloud-Based Cross-Browser Execution:** Integration with a cloud grid provider (like BrowserStack or Sauce Labs) to run tests across dozens of real browsers and devices in parallel.
+2.  **AI-Powered Exploratory Testing:** "explore" mode where the AI is given a URL and autonomously navigates the application, trying to find crashes and bugs without a pre-written script.
+3.  **API Test Generation:** Extending the Discovery Service to ingest OpenAPI/Swagger specifications and have Gemini automatically generate a full suite of API contract and integration tests.
+4.  **User Session Recording to Test Script:** Building a browser extension to record a manual testing session (clicks, typing) and have the AI automatically convert it into a robust, repeatable iQAP test script.
+5.  **Jira & Slack Integration:** Automatically creating detailed Jira tickets for test failures (with videos/screenshots attached) and post notifications to a MSTeams channel.
+6.  **Performance Baseline Testing:** Enhancing the Execution Agent to capture key performance metrics (like Page Load Time, Largest Contentful Paint) and automatically fail a test if it regresses beyond a set threshold.
+7.  **AI-Powered Test Suite Optimization:** Building a module that analyzes test results over time and uses AI to identify redundant or low-value tests that can be safely removed, keeping the suite fast and efficient.
+8.  **Predictive Defect Analysis:** Using machine learning to analyze code commit history and past test failures to create a "heat map" that predicts which parts of the application are most likely to have bugs in the future.
+9.  **Automated Accessibility (a11y) Auditing:** Integrating tools like Axe-Core into the Execution Agent to automatically scan for and report on WCAG accessibility violations.
+10. **Enhanced Reporting and Analytics:** Building a more advanced dashboard in the frontend with trend charts, failure rate analysis, and visual test "diff" viewers.
