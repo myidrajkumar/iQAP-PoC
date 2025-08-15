@@ -1,5 +1,3 @@
-# FILE: iQAP-v1.0/services/execution-orchestrator/orchestrator.py (Corrected)
-
 import pika
 import os
 import time
