@@ -3,12 +3,12 @@ FROM python:3.13-slim
 WORKDIR /app
 
 COPY requirements.txt .
-# We install dependencies first to leverage Docker layer caching
+#Installing dependencies first to leverage Docker layer caching
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
 EXPOSE 8000
 
-# Use --reload for development to automatically apply code changes
+# Using --reload for development to automatically apply code changes
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

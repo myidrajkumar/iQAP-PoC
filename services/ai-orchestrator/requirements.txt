@@ -2,6 +2,5 @@ fastapi
 uvicorn[standard]
 pydantic
 pika
-# New dependencies
-openai
+google-generativeai
 httpx
