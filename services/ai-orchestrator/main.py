@@ -7,26 +7,34 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 
-# --- Initialize ---
+# --- Initialize FastAPI and Gemini Model ---
 app = FastAPI()
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-generation_config = {
-    "temperature": 0.2,
-    "top_p": 1,
-    "top_k": 1,
-    "max_output_tokens": 2048,
-}
-model = genai.GenerativeModel("gemini-1.0-pro", generation_config=generation_config)
 
+# Configure the Gemini client with the API key from environment variables
+try:
+    genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+    generation_config = {
+        "temperature": 0.2,
+        "top_p": 1,
+        "top_k": 1,
+        "max_output_tokens": 4096,
+    }
+    model = genai.GenerativeModel("gemini-1.0-pro", generation_config=generation_config)
+    print("AI Orchestrator: Successfully configured Gemini Pro model.")
+except Exception as e:
+    print(
+        f"CRITICAL ERROR: Failed to configure Gemini API. Is GOOGLE_API_KEY set? Error: {e}"
+    )
+    model = None
+
+# --- Service URLs and RabbitMQ Configuration ---
 DISCOVERY_SERVICE_URL = "http://discovery-service:8001/discover"
-
-# --- RabbitMQ Configuration ---
 RABBITMQ_HOST = "rabbitmq"
-credentials = pika.PlainCredentials(
-    os.getenv("RABBITMQ_DEFAULT_USER"), os.getenv("RABBITMQ_DEFAULT_PASS")
-)
+RABBITMQ_USER = os.getenv("RABBITMQ_DEFAULT_USER", "rabbit_user")
+RABBITMQ_PASS = os.getenv("RABBITMQ_DEFAULT_PASS", "rabbit_password")
+credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASS)
 
-# --- CORS ---
+# --- CORS Middleware ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
@@ -36,6 +44,7 @@ app.add_middleware(
 )
 
 
+# --- Pydantic Models for Request Bodies ---
 class GenerationRequest(BaseModel):
     requirement: str
     target_url: str
@@ -47,6 +56,7 @@ class WebhookRequest(BaseModel):
 
 
 def publish_to_rabbitmq(message: dict):
+    """Publishes a job message to the RabbitMQ queue."""
     try:
         connection = pika.BlockingConnection(
             pika.ConnectionParameters(host=RABBITMQ_HOST, credentials=credentials)
@@ -66,8 +76,29 @@ def publish_to_rabbitmq(message: dict):
         raise HTTPException(status_code=503, detail="Messaging service unavailable.")
 
 
+async def get_ui_blueprint(url: str) -> str:
+    """Calls the Discovery Service to get a UI blueprint."""
+    print("Contacting Discovery Service...")
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                DISCOVERY_SERVICE_URL, json={"url": url}, timeout=60.0
+            )
+            response.raise_for_status()
+            print("Discovery Service returned blueprint successfully.")
+            return json.dumps(response.json(), indent=2)
+    except httpx.RequestError as e:
+        print(f"ERROR: Could not connect to Discovery Service: {e}")
+        raise HTTPException(status_code=503, detail="Discovery Service unavailable.")
+
+
 def call_gemini_service(requirement: str, ui_blueprint: str) -> dict:
     """Builds the MCP and calls the Google Gemini API."""
+    if not model:
+        raise HTTPException(
+            status_code=500, detail="Gemini model is not configured. Check API key."
+        )
+
     print("MCP: Building context and calling Google Gemini...")
 
     prompt = f"""
@@ -80,99 +111,30 @@ def call_gemini_service(requirement: str, ui_blueprint: str) -> dict:
     ---
     Generate a JSON test case with the following schema:
     {{
-      "test_case_id": "string (e.g., TC-LOGIN-001)",
-      "objective": "string",
+      "test_case_id": "string (e.g., TC-LOGIN-LOGOUT-001)",
+      "objective": "string (a concise summary of the requirement)",
       "parameters": [
         {{
-          "dataset_name": "string (e.g., 'valid_credentials')",
-          "data": {{ "Username_Input": "string", "Password_Input": "string" }}
-        }},
-        {{
-          "dataset_name": "string (e.g., 'locked_out_user')",
-          "data": {{ "Username_Input": "string", "Password_Input": "string" }}
+          "dataset_name": "valid_credentials",
+          "data": {{ "Username_Input": "standard_user", "Password_Input": "secret_sauce" }}
         }}
       ],
       "steps": [
-        {{ "step": "integer", "action": "string (e.g., ENTER_TEXT, CLICK)", "target_element": "string (must be a logical_name from the blueprint)", "data_key": "string (the key from the dataset above, e.g., 'Username_Input')" }}
+        {{ "step": "integer", "action": "string (ENTER_TEXT, CLICK, or VERIFY_ELEMENT_VISIBLE)", "target_element": "string (must be a logical_name from the blueprint)", "data_key": "string (optional: the key from the dataset, e.g., 'Username_Input')" }}
       ]
     }}
     """
 
     try:
         response = model.generate_content(prompt)
-        # Clean up Gemini's markdown response
+        # Clean up Gemini's markdown response ` ```json ... ``` `
         cleaned_response = (
             response.text.replace("```json", "").replace("```", "").strip()
         )
+        print("Gemini API call successful.")
         return json.loads(cleaned_response)
     except Exception as e:
-        print(f"ERROR: Gemini API call failed: {e}")
-        raise HTTPException(
-            status_code=500, detail="Failed to generate test case from AI model."
-        )
-
-
-@app.post("/webhook/run-suite")
-async def run_suite_webhook(request: WebhookRequest):
-    """CI/CD Webhook to trigger a pre-defined test suite."""
-    print(f"Webhook: Received request to run suite '{request.suite_name}'")
-    # TODO: This is a stub. A real implementation would fetch pre-defined tests from the DB.
-    mock_requirement = "Log in, verify inventory page, and log out."
-    generated_test_case = await generate_test_case(
-        GenerationRequest(requirement=mock_requirement, target_url=request.target_url)
-    )
-    return {
-        "message": f"Webhook triggered. Job '{generated_test_case.get('test_case_id')}' published."
-    }
-
-
-async def get_ui_blueprint(url: str) -> str:
-    """Calls the Discovery Service to get a UI blueprint."""
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                DISCOVERY_SERVICE_URL, json={"url": url}, timeout=60.0
-            )
-            response.raise_for_status()
-            return json.dumps(response.json(), indent=2)
-    except httpx.RequestError as e:
-        print(f"ERROR: Could not connect to Discovery Service: {e}")
-        raise HTTPException(status_code=503, detail="Discovery Service unavailable.")
-
-
-def call_llm_service(requirement: str, ui_blueprint: str) -> dict:
-    """Builds the MCP and calls the real OpenAI API."""
-    print("MCP: Building context and calling OpenAI...")
-    system_prompt = "You are an expert QA Automation Engineer. Your task is to convert a business requirement and a UI element blueprint into a structured JSON test case. You must return only a single, valid JSON object and nothing else."
-
-    user_prompt = f"""
-    Business Requirement: "{requirement}"
-    ---
-    UI Blueprint (discovered elements from the page):
-    {ui_blueprint}
-    ---
-    Generate a JSON test case with the following schema:
-    {{
-        "test_case_id": "string (e.g., TC-LOGIN-001)",
-        "objective": "string",
-        "steps": [
-            {{ "step": "integer", "action": "string (e.g., ENTER_TEXT, CLICK)", "target_element": "string (must be a logical_name from the blueprint)", "data": "string (use placeholders like [VALID_USERNAME])" }}
-        ]
-    }}
-    """
-
-    try:
-        completion = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-        )
-        response_text = completion.choices.message.content
-        return json.loads(response_text)
-    except Exception as e:
-        print(f"ERROR: OpenAI API call failed: {e}")
+        print(f"ERROR: Gemini API call or JSON parsing failed: {e}")
         raise HTTPException(
             status_code=500, detail="Failed to generate test case from AI model."
         )
@@ -185,8 +147,8 @@ async def generate_test_case(request: GenerationRequest):
     # 1. Get UI blueprint from the Discovery Service
     ui_blueprint = await get_ui_blueprint(request.target_url)
 
-    # 2. Call the real LLM with the context
-    generated_test_case = call_llm_service(request.requirement, ui_blueprint)
+    # 2. Call the real Gemini LLM with the context
+    generated_test_case = call_gemini_service(request.requirement, ui_blueprint)
 
     # 3. Publish the job to RabbitMQ
     publish_to_rabbitmq(generated_test_case)
@@ -194,6 +156,26 @@ async def generate_test_case(request: GenerationRequest):
     return {
         "message": "Test Case Generation Job Published!",
         "test_case_id": generated_test_case.get("test_case_id"),
+    }
+
+
+@app.post("/webhook/run-suite")
+async def run_suite_webhook(request: WebhookRequest):
+    """CI/CD Webhook to trigger a pre-defined test suite."""
+    print(f"Webhook: Received request to run suite '{request.suite_name}'")
+    # TODO: This is a stub. A real implementation would fetch pre-defined tests from the DB.
+    mock_requirement = (
+        "Log in, verify the main product inventory page is visible, and then log out."
+    )
+
+    # We need to re-use the generate_test_case logic
+    generation_request = GenerationRequest(
+        requirement=mock_requirement, target_url=request.target_url
+    )
+    response_data = await generate_test_case(generation_request)
+
+    return {
+        "message": f"Webhook triggered. Job '{response_data.get('test_case_id')}' published."
     }
 
 
