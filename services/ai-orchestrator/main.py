@@ -10,7 +10,6 @@ from fastapi.middleware.cors import CORSMiddleware
 # --- Initialize FastAPI and Gemini Model ---
 app = FastAPI()
 
-# Configure the Gemini client with the API key from environment variables
 try:
     genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
     generation_config = {
@@ -19,9 +18,7 @@ try:
         "top_k": 1,
         "max_output_tokens": 4096,
     }
-    model = genai.GenerativeModel(
-        "gemini-2.0-flash", generation_config=generation_config
-    )
+    model = genai.GenerativeModel("gemini-2.0-flash", generation_config=generation_config)
     print("AI Orchestrator: Successfully configured Gemini Pro model.")
 except Exception as e:
     print(
@@ -69,7 +66,7 @@ def publish_to_rabbitmq(message: dict):
             exchange="",
             routing_key="test_generation_queue",
             body=json.dumps(message),
-            properties=pika.BasicProperties(delivery_mode=2),
+            properties=pika.BasicProperties(delivery_mode=2),  # make message persistent
         )
         connection.close()
         print(f" [x] Sent job to RabbitMQ: {message.get('test_case_id')}")
@@ -95,7 +92,7 @@ async def get_ui_blueprint(url: str) -> str:
 
 
 def call_gemini_service(requirement: str, ui_blueprint: str) -> dict:
-    """Builds the MCP and calls the Google Gemini API."""
+    """Builds the MCP and calls the Google Gemini API with the corrected, consistent prompt."""
     if not model:
         raise HTTPException(
             status_code=500, detail="Gemini model is not configured. Check API key."
@@ -108,24 +105,44 @@ def call_gemini_service(requirement: str, ui_blueprint: str) -> dict:
 
     Business Requirement: "{requirement}"
     ---
-    UI Blueprint (discovered elements from the login page):
+    UI Blueprint (discovered elements from the page):
     {ui_blueprint}
     ---
-    Generate a JSON test case with the following schema. IMPORTANT: For any "CLICK" action that causes a page navigation, you MUST include a "verifications" block to confirm the navigation was successful.
+    Generate a JSON test case. The keys in the 'data' object inside 'parameters' MUST EXACTLY MATCH the 'logical_name' of the elements from the blueprint that you use in the 'steps'. For example, if a step targets 'user-name', the data key must also be 'user-name'.
 
+    Example Response Format:
     {{
-      "test_case_id": "string",
-      "objective": "string",
-      "target_url": "string (the initial URL to visit)",
-      "ui_blueprint": [ {{ "logical_name": "string", "tag": "string", "id": "string", ... }} ],
+      "test_case_id": "TC001",
+      "objective": "Verify a user can log in with valid credentials.",
+      "target_url": "https://www.saucedemo.com",
+      "parameters": [
+        {{
+          "dataset_name": "valid_credentials",
+          "data": {{ 
+            "user-name": "standard_user", 
+            "password": "secret_sauce" 
+          }}
+        }}
+      ],
       "steps": [
         {{ 
-          "step": "integer", 
-          "action": "string (ENTER_TEXT, CLICK, VERIFY_ELEMENT_VISIBLE)", 
-          "target_element": "string (a logical_name from the blueprint)",
-          "data_key": "string (optional)",
-          "verifications": {{  // <-- NEW SCHEMA RULE
-            "element_to_verify": "string (the logical_name of an element that MUST be visible on the NEW page after the click)"
+          "step": 1, 
+          "action": "ENTER_TEXT", 
+          "target_element": "user-name",
+          "data_key": "user-name"
+        }},
+        {{ 
+          "step": 2, 
+          "action": "ENTER_TEXT", 
+          "target_element": "password",
+          "data_key": "password"
+        }},
+        {{ 
+          "step": 3, 
+          "action": "CLICK", 
+          "target_element": "login-button",
+          "verifications": {{
+            "element_to_verify": "inventory_container"
           }}
         }}
       ]
@@ -134,6 +151,7 @@ def call_gemini_service(requirement: str, ui_blueprint: str) -> dict:
 
     try:
         response = model.generate_content(prompt)
+        # Clean up Gemini's markdown response ` ```json ... ``` `
         cleaned_response = (
             response.text.replace("```json", "").replace("```", "").strip()
         )
@@ -148,9 +166,7 @@ def call_gemini_service(requirement: str, ui_blueprint: str) -> dict:
 
 @app.post("/generate-test-case")
 async def generate_test_case(request: GenerationRequest):
-    """
-    The main generation function. We now inject the FULL blueprint into the test case.
-    """
+    """The main generation function that assembles and publishes the job."""
     print(f"Orchestrator: Received request for URL: {request.target_url}")
 
     # 1. Get UI blueprint from the Discovery Service
@@ -182,7 +198,6 @@ async def run_suite_webhook(request: WebhookRequest):
         "Log in, verify the main product inventory page is visible, and then log out."
     )
 
-    # We need to re-use the generate_test_case logic
     generation_request = GenerationRequest(
         requirement=mock_requirement, target_url=request.target_url
     )
@@ -195,4 +210,5 @@ async def run_suite_webhook(request: WebhookRequest):
 
 @app.get("/")
 def read_root():
+    """Root endpoint for health checks."""
     return {"message": "iQAP AI Orchestrator is running."}

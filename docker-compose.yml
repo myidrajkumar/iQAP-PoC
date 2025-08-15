@@ -49,10 +49,12 @@ services:
     build: ./services/execution-agent
     volumes:
       - ./services/execution-agent:/app
+      - ./debug:/app/debug
     shm_size: '2gb'
     env_file: .env
     environment:
       - PYTHONUNBUFFERED=1
+      - HEADLESS=false
     depends_on:
       - execution-orchestrator
       - postgres
