@@ -12,7 +12,7 @@ app = FastAPI()
 
 try:
     genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-    generation_config = {"temperature": 0.1}
+    generation_config = {"temperature": 0.0}
     model = genai.GenerativeModel(
         "gemini-2.5-flash", generation_config=generation_config
     )
@@ -60,7 +60,6 @@ MOCK_TEST_CASE_JSON = {
         },
     ],
 }
-
 
 # --- CORS Middleware ---
 app.add_middleware(
@@ -121,14 +120,25 @@ def generate_test_case_from_ai(requirement: str, ui_blueprint: str) -> dict:
         return MOCK_TEST_CASE_JSON
 
     prompt = f"""
-    You are a JSON generation machine. Your sole purpose is to convert a user's requirement into a JSON object that follows a strict schema. Return ONLY the JSON.
+    You are a JSON generation machine. Your sole purpose is to convert a user's requirement into a structured JSON test case.
+    
+    RULES:
+    1.  Base the test steps EXCLUSIVELY on the provided "Business Requirement".
+    2.  Use the "UI Blueprint" to find the correct `logical_name` for each element.
+    3.  You MUST use the key "action" for the action type. The allowed values for "action" are ONLY: "ENTER_TEXT", "CLICK", "VERIFY_ELEMENT_VISIBLE".
+    4.  The keys in the `data` object inside `parameters` MUST EXACTLY MATCH the `logical_name` you use in the `steps`.
+    5.  A "CLICK" that navigates MUST have a "verifications" block.
+    6.  You MUST return ONLY the raw JSON object and absolutely no other text or markdown.
 
-    **Requirement:** "{requirement}"
-    **UI Blueprint:** {ui_blueprint}
-
-    Generate a JSON with root keys: "test_case_id", "objective", "parameters", "steps".
-    - `parameters.data` keys must match `steps.target_element`.
-    - A navigating CLICK step must have a `verifications` block.
+    ---
+    Business Requirement:
+    "{requirement}"
+    ---
+    UI Blueprint:
+    {ui_blueprint}
+    ---
+    
+    Generate the JSON test case now.
     """
 
     try:
@@ -156,14 +166,12 @@ def generate_test_case_from_ai(requirement: str, ui_blueprint: str) -> dict:
 
 @app.post("/generate-test-case")
 async def generate_test_case(request: GenerationRequest):
-    """The main generation function that assembles and publishes the job."""
     print(f"Orchestrator: Received request for URL: {request.target_url}")
 
     try:
         ui_blueprint_string = await get_ui_blueprint(request.target_url)
         ui_blueprint_json = json.loads(ui_blueprint_string)
 
-        # This will now ALWAYS return a valid test case (either from AI or fallback)
         generated_test_case = generate_test_case_from_ai(
             request.requirement, ui_blueprint_string
         )
@@ -177,7 +185,6 @@ async def generate_test_case(request: GenerationRequest):
             "message": "Test Case Generation Job Published!",
             "test_case_id": generated_test_case.get("test_case_id"),
         }
-
     except Exception as e:
         print(f"FATAL ERROR in generation process: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -185,5 +192,4 @@ async def generate_test_case(request: GenerationRequest):
 
 @app.get("/")
 def read_root():
-    """Root endpoint for health checks."""
     return {"message": "iQAP AI Orchestrator is running."}

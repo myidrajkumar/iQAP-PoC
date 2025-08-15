@@ -41,7 +41,7 @@ def write_result_to_db(objective: str, status: str, test_case_id: str):
 # --- Locator Function ---
 def find_element_locator(page, target_name: str, ui_blueprint: list):
     """Dynamically finds a locator from the UI blueprint."""
-    if not target_name:  # Guard against malformed steps
+    if not target_name:
         raise ValueError("Target element name cannot be None.")
 
     target_element_data = next(
@@ -67,7 +67,9 @@ def find_element_locator(page, target_name: str, ui_blueprint: list):
 
 # --- Test Runner Function ---
 def run_test_case(test_case_json: dict):
-    """Executes a test case with robust validation and debugging."""
+    """
+    Executes a test case with robust validation and debugging.
+    """
     print(
         f"--- Raw JSON Received by Agent ---\n{json.dumps(test_case_json, indent=2)}\n---------------------------------"
     )
@@ -82,7 +84,7 @@ def run_test_case(test_case_json: dict):
         return
 
     objective = test_case_json.get("objective")
-    parameter_sets = test_case_json.get("parameters", [])
+    parameter_sets = test_case_json.get("parameters", [{}])
     test_case_id_base = test_case_json.get("test_case_id")
     ui_blueprint = test_case_json.get("ui_blueprint", [])
     target_url = test_case_json.get("target_url", "https://www.saucedemo.com")
@@ -105,7 +107,8 @@ def run_test_case(test_case_json: dict):
                 page.goto(target_url, timeout=60000)
 
                 for step in test_case_json.get("steps", []):
-                    action = step.get("action")
+                    action = step.get("action") or step.get("type")
+
                     target_name = step.get("target_element")
                     data_key = step.get("data_key")
                     data_to_use = dataset.get(data_key, "") if data_key else ""
@@ -132,6 +135,11 @@ def run_test_case(test_case_json: dict):
                                 page, verify_target, ui_blueprint
                             )
                             expect(verification_locator).to_be_visible(timeout=5000)
+                    elif (
+                        action == "VERIFY_ELEMENT_VISIBLE"
+                        or action == "ELEMENT_VISIBLE"
+                    ):
+                        expect(element_locator).to_be_visible()
 
                     print(
                         f"  [SUCCESS] Action '{action}' on '{target_name}' successful."
