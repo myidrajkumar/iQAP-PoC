@@ -8,7 +8,7 @@ services:
       - ./frontend/src:/app/src
     environment:
       - REACT_APP_API_URL=http://localhost:8000
-      - REACT_APP_REPORTING_URL=http://localhost:8002 # New URL for reporting
+      - REACT_APP_REPORTING_URL=http://localhost:8002
     depends_on:
       - ai-orchestrator
       - reporting-service
@@ -27,7 +27,7 @@ services:
       - rabbitmq
       - discovery-service
 
-  discovery-service: # NEW SERVICE
+  discovery-service:
     build: ./services/discovery-service
     ports:
       - "8001:8001"
@@ -54,12 +54,11 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
     depends_on:
-      execution-orchestrator:
-        condition: service_started
-      postgres:
-        condition: service_healthy
+      - execution-orchestrator
+      - postgres
+      - minio
 
-  reporting-service: # NEW SERVICE
+  reporting-service:
     build: ./services/reporting-service
     ports:
       - "8002:8002"
@@ -69,8 +68,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
     depends_on:
-      postgres:
-        condition: service_healthy
+      - postgres
 
   # --- Infrastructure ---
   postgres:
@@ -80,11 +78,6 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     env_file: .env
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
 
   rabbitmq:
     image: rabbitmq:3.12-management-alpine
@@ -93,5 +86,16 @@ services:
       - "15672:15672"
     env_file: .env
 
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"   # API Port
+      - "9001:9001"   # Console Port
+    volumes:
+      - minio_data:/data
+    env_file: .env
+    command: server /data --console-address ":9001"
+
 volumes:
   postgres_data:
+  minio_data:
