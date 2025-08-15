@@ -45,7 +45,7 @@ except Exception as e:
 
 
 def compare_images(img1_data, img2_data, diff_threshold=1.0):
-    """Compares two images and returns a difference score."""
+    """Compares two images and returns a difference score and a diff image if applicable."""
     img1 = Image.open(io.BytesIO(img1_data)).convert("RGB")
     img2 = Image.open(io.BytesIO(img2_data)).convert("RGB")
 
@@ -54,7 +54,6 @@ def compare_images(img1_data, img2_data, diff_threshold=1.0):
 
     diff = ImageChops.difference(img1, img2)
 
-    # Calculate a simple difference score
     stat = diff.getextrema()
     max_diff = max(stat[0][1], stat[1][1], stat[2][1])
     score = (max_diff / 255) * 100
@@ -63,7 +62,7 @@ def compare_images(img1_data, img2_data, diff_threshold=1.0):
 
 
 def handle_visual_test(page, test_case_id: str, step_name: str):
-    """Orchestrates a single visual regression test."""
+    """Orchestrates a single visual regression test against MinIO."""
     if not minio_client:
         return "N/A", "MinIO client not configured."
 
@@ -73,10 +72,7 @@ def handle_visual_test(page, test_case_id: str, step_name: str):
     diff_object_name = f"{test_case_id}/{step_name}.diff.png"
 
     try:
-        # Check if a baseline exists
         minio_client.stat_object(VISUAL_BUCKET_NAME, object_name)
-
-        # Baseline exists, download and compare
         baseline_response = minio_client.get_object(VISUAL_BUCKET_NAME, object_name)
         baseline_bytes = baseline_response.read()
 
@@ -86,7 +82,6 @@ def handle_visual_test(page, test_case_id: str, step_name: str):
             print(
                 f"  [VISUAL] FAIL: Difference score {diff_score:.2f} exceeded threshold."
             )
-            # Upload the failed image and the difference map for review
             minio_client.put_object(
                 VISUAL_BUCKET_NAME,
                 latest_object_name,
@@ -124,6 +119,59 @@ def handle_visual_test(page, test_case_id: str, step_name: str):
         return "BASELINE_CREATED", f"New baseline created: {object_name}"
 
 
+def find_element_with_healing(page, target_name: str, ui_blueprint: list):
+    """Dynamically finds a selector from the UI blueprint and includes self-healing."""
+    target_element_data = next(
+        (el for el in ui_blueprint if el.get("logical_name") == target_name), None
+    )
+
+    if not target_element_data:
+        raise Exception(
+            f"Logical name '{target_name}' not found in the provided UI blueprint."
+        )
+
+    # Strategy 1: Use 'id' if available (most reliable)
+    if target_element_data.get("id"):
+        primary_selector = f"#{target_element_data['id']}"
+        try:
+            page.locator(primary_selector).wait_for(state="visible", timeout=3000)
+            print(
+                f"  [Locator] Found element using primary selector: '{primary_selector}'"
+            )
+            return page.locator(primary_selector)
+        except PlaywrightError:
+            print(f"  [HEAL] Primary selector '{primary_selector}' failed.")
+
+    # Fallback strategies for self-healing
+    if target_element_data.get("text"):
+        text_selector = (
+            f"{target_element_data['tag']}:has-text(\"{target_element_data['text']}\")"
+        )
+        try:
+            page.locator(text_selector).wait_for(state="visible", timeout=2000)
+            print(f"  [HEAL] Found element using text selector: '{text_selector}'")
+            return page.locator(text_selector)
+        except PlaywrightError:
+            pass
+
+    if target_element_data.get("placeholder"):
+        placeholder_selector = (
+            f"input[placeholder='{target_element_data['placeholder']}']"
+        )
+        try:
+            page.locator(placeholder_selector).wait_for(state="visible", timeout=2000)
+            print(
+                f"  [HEAL] Found element using placeholder selector: '{placeholder_selector}'"
+            )
+            return page.locator(placeholder_selector)
+        except PlaywrightError:
+            pass
+
+    raise Exception(
+        f"Self-healing failed. Could not find a stable locator for '{target_name}'."
+    )
+
+
 def write_result_to_db(
     objective: str,
     status: str,
@@ -131,7 +179,7 @@ def write_result_to_db(
     step_results: list,
     test_case_id: str,
 ):
-    """Connects to the PostgreSQL database and inserts a detailed test result."""
+    """Connects to PostgreSQL and inserts a detailed test result."""
     conn = None
     try:
         conn = psycopg2.connect(
@@ -155,13 +203,12 @@ def write_result_to_db(
 
 
 def run_test_case(test_case_json: dict):
-    """
-    Takes a JSON test case, executes it using Playwright, and writes the result to the DB.
-    """
+    """Orchestrates the entire test execution flow for a single test case."""
     test_case_id = test_case_json.get("test_case_id", "UNKNOWN_TC")
+    ui_blueprint = test_case_json.get("ui_blueprint", [])
     print(f"\n--- Starting Test Case: {test_case_id} ---")
 
-    overall_status = "FAIL"  # Default status
+    overall_status = "FAIL"
     visual_status = "N/A"
     step_results = []
 
@@ -175,36 +222,24 @@ def run_test_case(test_case_json: dict):
             for step in test_case_json.get("steps", []):
                 action = step.get("action")
                 target_name = step.get("target_element")
-                data_key = step.get("data_key")  # For data parameterization
+                data_key = step.get("data_key")
 
-                # Using a hardcoded dataset for this version
                 dataset = {
                     "Username_Input": "standard_user",
                     "Password_Input": "secret_sauce",
                 }
-                data = dataset.get(data_key, "")
+                data = dataset.get(data_key, "") if data_key else ""
 
                 print(f"Executing Step {step.get('step')}: {action} on '{target_name}'")
 
-                # Simplified element map; in a real system this would come from the discovery blueprint
-                element_map = {
-                    "Username_Input": "#user-name",
-                    "Password_Input": "#password",
-                    "Login_Button": "#login-button",
-                }
-                selector = element_map.get(target_name)
-
-                if not selector:
-                    raise Exception(
-                        f"Logical name '{target_name}' not found in element map."
-                    )
-
-                element = page.locator(selector)
+                element = find_element_with_healing(page, target_name, ui_blueprint)
 
                 if action == "ENTER_TEXT":
-                    element.fill(data, timeout=10000)
+                    element.fill(data)
                 elif action == "CLICK":
-                    element.click(timeout=10000)
+                    element.click()
+                elif action == "VERIFY_ELEMENT_VISIBLE":
+                    expect(element).to_be_visible()
 
                 step_results.append(
                     {
@@ -215,7 +250,10 @@ def run_test_case(test_case_json: dict):
                 )
 
             print("\nFinal Verification...")
-            expect(page.locator(".inventory_list")).to_be_visible(timeout=5000)
+            inventory_element = find_element_with_healing(
+                page, "inventory_container", ui_blueprint
+            )
+            expect(inventory_element).to_be_visible()
             overall_status = "PASS"
 
             print("\nPerforming Visual Test...")

@@ -147,12 +147,16 @@ async def generate_test_case(request: GenerationRequest):
     print(f"Orchestrator: Received request for URL: {request.target_url}")
 
     # 1. Get UI blueprint from the Discovery Service
-    ui_blueprint = await get_ui_blueprint(request.target_url)
+    ui_blueprint_string = await get_ui_blueprint(request.target_url)
+    ui_blueprint_json = json.loads(ui_blueprint_string)
 
     # 2. Call the real Gemini LLM with the context
-    generated_test_case = call_gemini_service(request.requirement, ui_blueprint)
+    generated_test_case = call_gemini_service(request.requirement, ui_blueprint_string)
 
-    # 3. Publish the job to RabbitMQ
+    # 3. Inject the UI blueprint into the final message for the agent
+    generated_test_case["ui_blueprint"] = ui_blueprint_json["elements"]
+
+    # 4. Publish the enriched job to RabbitMQ
     publish_to_rabbitmq(generated_test_case)
 
     return {
