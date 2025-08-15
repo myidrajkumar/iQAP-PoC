@@ -1,232 +1,181 @@
-import pika
 import os
-import time
+import pika
 import json
-import psycopg2
-from playwright.sync_api import sync_playwright, expect, Error as PlaywrightError
+import httpx
+import google.generativeai as genai
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
 
-# --- Client and Configuration Setup ---
+# --- Initialize FastAPI and Gemini Model ---
+app = FastAPI()
 
-# RabbitMQ Configuration
-RABBITMQ_HOST = "rabbitmq"
-RABBITMQ_USER = os.getenv("RABBITMQ_DEFAULT_USER", "rabbit_user")
-RABBITMQ_PASS = os.getenv("RABBITMQ_DEFAULT_PASS", "rabbit_password")
+# Configure the Gemini client with the API key from environment variables
+try:
+    genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+    generation_config = {"temperature": 0.2, "top_p": 1, "top_k": 1, "max_output_tokens": 4096}
+    model = genai.GenerativeModel('gemini-pro', generation_config=generation_config)
+    print("AI Orchestrator: Successfully configured Gemini Pro model.")
+except Exception as e:
+    print(f"CRITICAL ERROR: Failed to configure Gemini API. Is GOOGLE_API_KEY set? Error: {e}")
+    model = None
 
-# Database Configuration
-DB_NAME = os.getenv("POSTGRES_DB")
-DB_USER = os.getenv("POSTGRES_USER")
-DB_PASS = os.getenv("POSTGRES_PASSWORD")
-DB_HOST = "postgres"
+# --- Service URLs and RabbitMQ Configuration ---
+DISCOVERY_SERVICE_URL = "http://discovery-service:8001/discover"
+RABBITMQ_HOST = 'rabbitmq'
+RABBITMQ_USER = os.getenv('RABBITMQ_DEFAULT_USER', 'rabbit_user')
+RABBITMQ_PASS = os.getenv('RABBITMQ_DEFAULT_PASS', 'rabbit_password')
+credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASS)
 
-# MinIO Configuration is defined but not used in this specific test logic.
-# It is kept for the "Visual Regression" feature on the roadmap.
-MINIO_HOST = "minio:9000"
-MINIO_ACCESS_KEY = os.getenv("MINIO_ROOT_USER")
-MINIO_SECRET_KEY = os.getenv("MINIO_ROOT_PASSWORD")
-VISUAL_BUCKET_NAME = "visual-baselines"
+# --- CORS Middleware ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
+# --- Pydantic Models for Request Bodies ---
+class GenerationRequest(BaseModel):
+    requirement: str
+    target_url: str
 
-# --- Core Feature Functions ---
+class WebhookRequest(BaseModel):
+    suite_name: str
+    target_url: str
 
-
-def write_result_to_db(objective: str, status: str, test_case_id: str):
-    """Connects to the PostgreSQL database and inserts a test result."""
-    conn = None
+def publish_to_rabbitmq(message: dict):
+    """Publishes a job message to the RabbitMQ queue."""
     try:
-        conn = psycopg2.connect(
-            dbname=DB_NAME, user=DB_USER, password=DB_PASS, host=DB_HOST
+        connection = pika.BlockingConnection(pika.ConnectionParameters(host=RABBITMQ_HOST, credentials=credentials))
+        channel = connection.channel()
+        channel.queue_declare(queue='test_generation_queue', durable=True)
+        channel.basic_publish(
+            exchange='',
+            routing_key='test_generation_queue',
+            body=json.dumps(message),
+            properties=pika.BasicProperties(delivery_mode=2)  # make message persistent
         )
-        cursor = conn.cursor()
-        # For this version, we write the most critical fields to the database.
-        sql = """INSERT INTO test_results (objective, status, test_case_id, timestamp) 
-                 VALUES (%s, %s, %s, NOW());"""
-        cursor.execute(sql, (objective, status, test_case_id))
-        conn.commit()
-        print(f"  [DB] Result for {test_case_id} saved to database.")
-        cursor.close()
-    except (Exception, psycopg2.DatabaseError) as error:
-        print(f"  [DB] Error saving result: {error}")
-    finally:
-        if conn is not None:
-            conn.close()
+        connection.close()
+        print(f" [x] Sent job to RabbitMQ: {message.get('test_case_id')}")
+    except pika.exceptions.AMQPConnectionError as e:
+        print(f"ERROR: Could not connect to RabbitMQ: {e}")
+        raise HTTPException(status_code=503, detail="Messaging service unavailable.")
 
+async def get_ui_blueprint(url: str) -> str:
+    """Calls the Discovery Service to get a UI blueprint."""
+    print("Contacting Discovery Service...")
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(DISCOVERY_SERVICE_URL, json={"url": url}, timeout=60.0)
+            response.raise_for_status()
+            print("Discovery Service returned blueprint successfully.")
+            return json.dumps(response.json(), indent=2)
+    except httpx.RequestError as e:
+        print(f"ERROR: Could not connect to Discovery Service: {e}")
+        raise HTTPException(status_code=503, detail="Discovery Service unavailable.")
 
-def find_element_locator(page, target_name: str, ui_blueprint: list):
+def call_gemini_service(requirement: str, ui_blueprint: str) -> dict:
+    """Builds the MCP and calls the Google Gemini API with the corrected, consistent prompt."""
+    if not model:
+        raise HTTPException(status_code=500, detail="Gemini model is not configured. Check API key.")
+    
+    print("MCP: Building context and calling Google Gemini...")
+    
+    # This is the corrected prompt with consistent key naming instructions.
+    prompt = f"""
+    You are an expert QA Automation Engineer. Your task is to convert a business requirement and a UI element blueprint into a structured JSON test case. You must return only a single, valid JSON object and nothing else.
+
+    Business Requirement: "{requirement}"
+    ---
+    UI Blueprint (discovered elements from the page):
+    {ui_blueprint}
+    ---
+    Generate a JSON test case with the following schema. IMPORTANT: The keys in the 'data' object inside 'parameters' MUST EXACTLY MATCH the 'logical_name' of the elements from the blueprint that you use in the 'steps'. For example, if a step targets 'user-name', the data key must also be 'user-name'.
+
+    {{
+      "test_case_id": "TC001",
+      "objective": "Verify a user can log in with valid credentials.",
+      "target_url": "https://www.saucedemo.com",
+      "ui_blueprint": [],
+      "parameters": [
+        {{
+          "dataset_name": "valid_credentials",
+          "data": {{ 
+            "user-name": "standard_user", 
+            "password": "secret_sauce" 
+          }}
+        }}
+      ],
+      "steps": [
+        {{ 
+          "step": 1, 
+          "action": "ENTER_TEXT", 
+          "target_element": "user-name",
+          "data_key": "user-name"
+        }},
+        {{ 
+          "step": 2, 
+          "action": "ENTER_TEXT", 
+          "target_element": "password",
+          "data_key": "password"
+        }},
+        {{ 
+          "step": 3, 
+          "action": "CLICK", 
+          "target_element": "login-button",
+          "verifications": {{
+            "element_to_verify": "inventory_container"
+          }}
+        }}
+      ]
+    }}
     """
-    Dynamically finds a Playwright locator from the UI blueprint provided by the AI.
-    """
-    target_element_data = next(
-        (el for el in ui_blueprint if el.get("logical_name") == target_name), None
-    )
+    
+    try:
+        response = model.generate_content(prompt)
+        # Clean up Gemini's markdown response ` ```json ... ``` `
+        cleaned_response = response.text.replace("```json", "").replace("```", "").strip()
+        print("Gemini API call successful.")
+        return json.loads(cleaned_response)
+    except Exception as e:
+        print(f"ERROR: Gemini API call or JSON parsing failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate test case from AI model.")
 
-    # A map of known elements on pages other than the initial one.
-    # This is a temporary solution until a more advanced Discovery Service is built.
-    if not target_element_data:
-        known_elements = {
-            "inventory_container": {"id": "inventory_container"},
-            "shopping_cart_link": {"class": "shopping_cart_link"},
-            "burger_menu_button": {"id": "react-burger-menu-btn"},
-            "logout_sidebar_link": {"id": "logout_sidebar_link"},
-        }
-        if target_name in known_elements:
-            target_element_data = known_elements[target_name]
-        else:
-            raise Exception(
-                f"Logical name '{target_name}' not found in the provided UI blueprint or known elements."
-            )
+@app.post("/generate-test-case")
+async def generate_test_case(request: GenerationRequest):
+    """The main generation function that assembles and publishes the job."""
+    print(f"Orchestrator: Received request for URL: {request.target_url}")
+    
+    ui_blueprint_string = await get_ui_blueprint(request.target_url)
+    ui_blueprint_json = json.loads(ui_blueprint_string)
+    
+    generated_test_case = call_gemini_service(request.requirement, ui_blueprint_string)
+    
+    # Inject the blueprint and the target_url into the final message for the agent
+    generated_test_case['ui_blueprint'] = ui_blueprint_json['elements']
+    generated_test_case['target_url'] = request.target_url
+    
+    publish_to_rabbitmq(generated_test_case)
+    
+    return {"message": "Test Case Generation Job Published!", "test_case_id": generated_test_case.get("test_case_id")}
 
-    # Strategy 1: Use 'id' if available (most reliable)
-    if target_element_data.get("id"):
-        selector = f"#{target_element_data['id']}"
-        print(f"  [Locator] Using primary selector: '{selector}'")
-        return page.locator(selector)
+@app.post("/webhook/run-suite")
+async def run_suite_webhook(request: WebhookRequest):
+    """CI/CD Webhook to trigger a pre-defined test suite."""
+    print(f"Webhook: Received request to run suite '{request.suite_name}'")
+    # This is a stub. A real implementation would fetch pre-defined tests from the DB.
+    # For now, we'll just generate a single, standard test.
+    mock_requirement = "Log in, verify the main product inventory page is visible, and then log out."
+    
+    # Re-use the main generation logic
+    generation_request = GenerationRequest(requirement=mock_requirement, target_url=request.target_url)
+    response_data = await generate_test_case(generation_request)
 
-    # Future self-healing strategies (e.g., using text, placeholder) would be added here.
+    return {"message": f"Webhook triggered. Job '{response_data.get('test_case_id')}' published."}
 
-    raise Exception(f"Could not determine a stable locator for '{target_name}'.")
-
-
-def run_test_case(test_case_json: dict):
-    """
-    Takes a JSON test case and executes it for each parameter set provided by the AI.
-    """
-    test_case_id_base = test_case_json.get("test_case_id", "UNKNOWN_TC")
-    ui_blueprint = test_case_json.get("ui_blueprint", [])
-    target_url = test_case_json.get("target_url", "https://www.saucedemo.com")
-
-    # Loop through the AI-provided data parameter sets
-    parameter_sets = test_case_json.get("parameters", [{}])
-    if (
-        not parameter_sets
-    ):  # Ensure there's at least one run even if parameters are missing
-        parameter_sets = [{"dataset_name": "default", "data": {}}]
-
-    for params in parameter_sets:
-        dataset_name = params.get("dataset_name", "default")
-        dataset = params.get("data", {})
-        run_id = f"{test_case_id_base}-{dataset_name}"
-
-        print(f"\n--- Starting Test Run: {run_id} ---")
-        status = "FAIL"  # Default status for each run
-
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-                page.goto(target_url, timeout=60000, wait_until="domcontentloaded")
-
-                for step in test_case_json.get("steps", []):
-                    action = step.get("action")
-                    target_name = step.get("target_element")
-                    data_key = step.get("data_key")
-
-                    # Use the data from the current parameter set
-                    data_to_use = dataset.get(data_key, "") if data_key else ""
-
-                    print(
-                        f"Executing Step {step.get('step')}: {action} on '{target_name}'"
-                    )
-
-                    element_locator = find_element_locator(
-                        page, target_name, ui_blueprint
-                    )
-
-                    # Always wait for the element to be ready before interacting
-                    expect(element_locator).to_be_visible(timeout=10000)
-
-                    if action == "ENTER_TEXT":
-                        element_locator.fill(data_to_use)
-                    elif action == "CLICK":
-                        element_locator.click()
-
-                        # After clicking, robustly verify the next page has loaded
-                        verifications = step.get("verifications")
-                        if verifications and verifications.get("element_to_verify"):
-                            # Hardcoded expected URL for this specific test case.
-                            expected_url_part = "**/inventory.html"
-                            print(
-                                f"  [Verify] Waiting for navigation to URL containing '{expected_url_part}'..."
-                            )
-                            page.wait_for_url(expected_url_part, timeout=10000)
-                            print("  [Verify] Navigation successful.")
-
-                            verify_target = verifications["element_to_verify"]
-                            print(
-                                f"  [Verify] Now waiting for element '{verify_target}'..."
-                            )
-                            verification_locator = find_element_locator(
-                                page, verify_target, ui_blueprint
-                            )
-                            expect(verification_locator).to_be_visible(timeout=5000)
-                            print(
-                                f"  [Verify] Success! Element '{verify_target}' is visible."
-                            )
-
-                    print(
-                        f"  [SUCCESS] Action '{action}' on '{target_name}' successful."
-                    )
-
-                print("\nAll test steps completed successfully.")
-                status = "PASS"
-                browser.close()
-
-        except Exception as e:
-            print(f"[FAIL] Test run finished with an unhandled error: {e}")
-            status = "FAIL"
-        finally:
-            print(f"--- Test Run Finished with Status: {status} ---")
-            write_result_to_db(
-                objective=test_case_json.get("objective", "N/A") + f" ({dataset_name})",
-                status=status,
-                test_case_id=run_id,
-            )
-
-
-def main():
-    """The main consumer loop that waits for jobs from RabbitMQ."""
-    while True:
-        try:
-            credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASS)
-            connection = pika.BlockingConnection(
-                pika.ConnectionParameters(
-                    host=RABBITMQ_HOST, credentials=credentials, heartbeat=600
-                )
-            )
-            print("Execution Agent: Successfully connected to RabbitMQ.")
-            channel = connection.channel()
-            channel.queue_declare(queue="execution_queue", durable=True)
-
-            def callback(ch, method, properties, body):
-                try:
-                    test_case = json.loads(body)
-                    print(
-                        f"\n [x] Execution Agent received job: {test_case.get('test_case_id')}"
-                    )
-                    run_test_case(test_case)
-                except Exception as e:
-                    print(f"ERROR processing job in agent callback: {e}")
-                finally:
-                    # Acknowledge the message so it is removed from the queue
-                    ch.basic_ack(delivery_tag=method.delivery_tag)
-
-            channel.basic_qos(prefetch_count=1)
-            channel.basic_consume(queue="execution_queue", on_message_callback=callback)
-
-            print(" [*] Execution Agent waiting for test jobs. To exit press CTRL+C")
-            channel.start_consuming()
-
-        except (
-            pika.exceptions.AMQPConnectionError,
-            pika.exceptions.StreamLostError,
-        ) as e:
-            print(
-                f"Execution Agent: Connection lost or unavailable. Error: {e}. Retrying in 5 seconds..."
-            )
-            time.sleep(5)
-        except KeyboardInterrupt:
-            print("Execution Agent: Shutting down.")
-            break
-
-
-if __name__ == "__main__":
-    main()
+@app.get("/")
+def read_root():
+    """Root endpoint for health checks."""
+    return {"message": "iQAP AI Orchestrator is running."}
