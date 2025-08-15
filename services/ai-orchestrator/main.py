@@ -19,7 +19,9 @@ try:
         "top_k": 1,
         "max_output_tokens": 4096,
     }
-    model = genai.GenerativeModel("gemini-1.0-pro", generation_config=generation_config)
+    model = genai.GenerativeModel(
+        "gemini-2.0-flash", generation_config=generation_config
+    )
     print("AI Orchestrator: Successfully configured Gemini Pro model.")
 except Exception as e:
     print(
