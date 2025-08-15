@@ -41,14 +41,15 @@ def write_result_to_db(objective: str, status: str, test_case_id: str):
 # --- Locator Function ---
 def find_element_locator(page, target_name: str, ui_blueprint: list):
     """Dynamically finds a locator from the UI blueprint."""
+    if not target_name:  # Guard against malformed steps
+        raise ValueError("Target element name cannot be None.")
+
     target_element_data = next(
         (el for el in ui_blueprint if el.get("logical_name") == target_name), None
     )
 
     if not target_element_data:
-        known_elements = {
-            "inventory_container": {"id": "inventory_container"},
-        }
+        known_elements = {"inventory_container": {"id": "inventory_container"}}
         if target_name in known_elements:
             target_element_data = known_elements[target_name]
         else:
@@ -66,32 +67,23 @@ def find_element_locator(page, target_name: str, ui_blueprint: list):
 
 # --- Test Runner Function ---
 def run_test_case(test_case_json: dict):
-    """
-    Executes a test case with robust parsing, detailed logging, and debugging features.
-    """
-    # --- ROBUST JSON PARSING AND LOGGING ---
+    """Executes a test case with robust validation and debugging."""
     print(
         f"--- Raw JSON Received by Agent ---\n{json.dumps(test_case_json, indent=2)}\n---------------------------------"
     )
 
-    # Intelligently find the objective, checking for common variations
-    objective = (
-        test_case_json.get("objective")
-        or test_case_json.get("test_objective")
-        or "Objective not found in AI response"
-    )
+    # Validate the incoming JSON before running
+    if not all(
+        k in test_case_json
+        for k in ["test_case_id", "objective", "parameters", "steps"]
+    ):
+        print("[FATAL] Received malformed test case JSON. Aborting run.")
+        write_result_to_db("Malformed Test Case", "FAIL", "INVALID_JSON")
+        return
 
-    # Intelligently find the parameter sets
-    parameter_sets = test_case_json.get("parameters") or test_case_json.get(
-        "parameter_sets", []
-    )
-    if not parameter_sets:
-        print(
-            "[WARNING] AI did not provide a parameter set. Using a default empty set."
-        )
-        parameter_sets = [{"dataset_name": "default_fallback", "data": {}}]
-
-    test_case_id_base = test_case_json.get("test_case_id", "UNKNOWN_TC")
+    objective = test_case_json.get("objective")
+    parameter_sets = test_case_json.get("parameters", [])
+    test_case_id_base = test_case_json.get("test_case_id")
     ui_blueprint = test_case_json.get("ui_blueprint", [])
     target_url = test_case_json.get("target_url", "https://www.saucedemo.com")
 
@@ -116,7 +108,6 @@ def run_test_case(test_case_json: dict):
                     action = step.get("action")
                     target_name = step.get("target_element")
                     data_key = step.get("data_key")
-
                     data_to_use = dataset.get(data_key, "") if data_key else ""
 
                     print(
@@ -132,27 +123,15 @@ def run_test_case(test_case_json: dict):
                         element_locator.fill(data_to_use)
                     elif action == "CLICK":
                         element_locator.click()
-
                         verifications = step.get("verifications")
                         if verifications and verifications.get("element_to_verify"):
                             expected_url_part = "**/inventory.html"
-                            print(
-                                f"  [Verify] Waiting for navigation to URL containing '{expected_url_part}'..."
-                            )
                             page.wait_for_url(expected_url_part, timeout=10000)
-                            print("  [Verify] Navigation successful.")
-
                             verify_target = verifications["element_to_verify"]
-                            print(
-                                f"  [Verify] Now waiting for element '{verify_target}'..."
-                            )
                             verification_locator = find_element_locator(
                                 page, verify_target, ui_blueprint
                             )
                             expect(verification_locator).to_be_visible(timeout=5000)
-                            print(
-                                f"  [Verify] Success! Element '{verify_target}' is visible."
-                            )
 
                     print(
                         f"  [SUCCESS] Action '{action}' on '{target_name}' successful."
@@ -166,17 +145,13 @@ def run_test_case(test_case_json: dict):
             print(f"[FAIL] Test run finished with an unhandled error: {e}")
             status = "FAIL"
             if page and not page.is_closed():
-                try:
-                    screenshot_path = (
-                        f"debug/failure_{run_id}_{time.strftime('%Y%m%d-%H%M%S')}.png"
-                    )
-                    page.screenshot(path=screenshot_path)
-                    print(f"Screenshot saved to: {screenshot_path}")
-                except Exception as screenshot_error:
-                    print(f"Failed to take screenshot: {screenshot_error}")
+                screenshot_path = (
+                    f"debug/failure_{run_id}_{time.strftime('%Y%m%d-%H%M%S')}.png"
+                )
+                page.screenshot(path=screenshot_path)
+                print(f"Screenshot saved to: {screenshot_path}")
         finally:
             print(f"--- Test Run Finished with Status: {status} ---")
-            # Use the robustly parsed objective
             final_objective = objective + f" ({dataset_name})"
             write_result_to_db(
                 objective=final_objective, status=status, test_case_id=run_id
@@ -201,9 +176,6 @@ def main():
             def callback(ch, method, properties, body):
                 try:
                     test_case = json.loads(body)
-                    print(
-                        f"\n [x] Execution Agent received job: {test_case.get('test_case_id')}"
-                    )
                     run_test_case(test_case)
                 except Exception as e:
                     print(f"ERROR processing job in agent callback: {e}")

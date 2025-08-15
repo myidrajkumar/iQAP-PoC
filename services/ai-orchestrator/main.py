@@ -2,6 +2,7 @@ import os
 import pika
 import json
 import httpx
+import time
 import google.generativeai as genai
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -12,16 +13,13 @@ app = FastAPI()
 
 try:
     genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-    # Set temperature to a low value for more deterministic, less "creative" responses
     generation_config = {
         "temperature": 0.1,
         "top_p": 1,
         "top_k": 1,
         "max_output_tokens": 4096,
     }
-    model = genai.GenerativeModel(
-        "gemini-2.0-flash", generation_config=generation_config
-    )
+    model = genai.GenerativeModel("gemini-2.0-flash", generation_config=generation_config)
     print("AI Orchestrator: Successfully configured Gemini Pro model.")
 except Exception as e:
     print(
@@ -46,14 +44,9 @@ app.add_middleware(
 )
 
 
-# --- Pydantic Models for Request Bodies ---
+# --- Pydantic Models ---
 class GenerationRequest(BaseModel):
     requirement: str
-    target_url: str
-
-
-class WebhookRequest(BaseModel):
-    suite_name: str
     target_url: str
 
 
@@ -94,56 +87,60 @@ async def get_ui_blueprint(url: str) -> str:
         raise HTTPException(status_code=503, detail="Discovery Service unavailable.")
 
 
-def call_gemini_service(requirement: str, ui_blueprint: str) -> dict:
-    """Builds the MCP and calls the Google Gemini API with a simplified, robust prompt."""
+def call_gemini_with_retries(
+    requirement: str, ui_blueprint: str, max_retries: int = 3
+) -> dict:
+    """
+    Calls the Gemini API, validates the response, and retries on failure.
+    This is the new "Guardian" function.
+    """
     if not model:
-        raise HTTPException(
-            status_code=500, detail="Gemini model is not configured. Check API key."
-        )
+        raise Exception("Gemini model is not configured.")
 
-    print("MCP: Building context and calling Google Gemini...")
-
-    # This is the new, simplified, and more direct prompt.
     prompt = f"""
-    You are an expert QA Automation Engineer. Your primary function is to convert a business requirement and a UI element blueprint into a structured JSON test case.
-    
-    Instructions:
-    1.  Base the test steps EXCLUSIVELY on the provided "Business Requirement".
-    2.  Use the "UI Blueprint" to find the correct `logical_name` for each element you need to interact with.
+    You are an expert QA Automation Engineer. Your ONLY function is to convert a business requirement and a UI element blueprint into a structured JSON test case.
+
+    RULES:
+    1.  Base the test steps EXCLUSIVELY on the "Business Requirement".
+    2.  Use the "UI Blueprint" to find the correct `logical_name` for each element.
     3.  The keys in the `data` object inside `parameters` MUST EXACTLY MATCH the `logical_name` you use in the `steps`.
-    4.  For any "CLICK" action that causes a page navigation, you MUST include a "verifications" block to confirm the navigation was successful by checking for a visible element on the new page.
-    5.  You must return ONLY the raw JSON object and absolutely no other text, explanation, or markdown formatting.
+    4.  For any "CLICK" that navigates, you MUST include a "verifications" block.
+    5.  You MUST return ONLY the raw JSON object and absolutely no other text or markdown.
 
     ---
-    Business Requirement:
-    "{requirement}"
+    Business Requirement: "{requirement}"
     ---
-    UI Blueprint (discovered elements from the page):
-    {ui_blueprint}
+    UI Blueprint: {ui_blueprint}
     ---
     
-    Now, generate the JSON test case based on these instructions.
+    Generate the JSON test case now.
     """
 
-    try:
-        response = model.generate_content(prompt)
-        # It's crucial to clean the response as Gemini can wrap it in markdown
-        cleaned_response = (
-            response.text.replace("```json", "").replace("```", "").strip()
-        )
-        print("Gemini API call successful.")
-        return json.loads(cleaned_response)
-    except Exception as e:
-        raw_response_text = "N/A"
-        if "response" in locals():
-            raw_response_text = response.text
-        print(
-            f"ERROR: Gemini API call or JSON parsing failed: {e}. Raw response: {raw_response_text}"
-        )
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to generate a valid test case from the AI model. Raw response: {raw_response_text}",
-        )
+    for attempt in range(max_retries):
+        print(f"MCP: Calling Google Gemini (Attempt {attempt + 1}/{max_retries})...")
+        try:
+            response = model.generate_content(prompt)
+            cleaned_response = (
+                response.text.replace("```json", "").replace("```", "").strip()
+            )
+
+            # Validate the JSON structure
+            result = json.loads(cleaned_response)
+            required_keys = ["test_case_id", "objective", "parameters", "steps"]
+            if all(key in result for key in required_keys):
+                print("Gemini API call successful and response is valid.")
+                return result
+            else:
+                print(
+                    f"[WARNING] Gemini response was valid JSON but missed required keys. Retrying..."
+                )
+
+        except (json.JSONDecodeError, Exception) as e:
+            print(f"[WARNING] Gemini API call or parsing failed: {e}. Retrying...")
+
+        time.sleep(2)  # Wait before retrying
+
+    raise Exception("AI failed to generate a valid test case after multiple attempts.")
 
 
 @app.post("/generate-test-case")
@@ -151,39 +148,28 @@ async def generate_test_case(request: GenerationRequest):
     """The main generation function that assembles and publishes the job."""
     print(f"Orchestrator: Received request for URL: {request.target_url}")
 
-    ui_blueprint_string = await get_ui_blueprint(request.target_url)
-    ui_blueprint_json = json.loads(ui_blueprint_string)
+    try:
+        ui_blueprint_string = await get_ui_blueprint(request.target_url)
+        ui_blueprint_json = json.loads(ui_blueprint_string)
 
-    generated_test_case = call_gemini_service(request.requirement, ui_blueprint_string)
+        generated_test_case = call_gemini_with_retries(
+            request.requirement, ui_blueprint_string
+        )
 
-    # Inject the blueprint and the target_url into the final message for the agent
-    generated_test_case["ui_blueprint"] = ui_blueprint_json["elements"]
-    generated_test_case["target_url"] = request.target_url
+        generated_test_case["ui_blueprint"] = ui_blueprint_json["elements"]
+        generated_test_case["target_url"] = request.target_url
 
-    publish_to_rabbitmq(generated_test_case)
+        publish_to_rabbitmq(generated_test_case)
 
-    return {
-        "message": "Test Case Generation Job Published!",
-        "test_case_id": generated_test_case.get("test_case_id"),
-    }
+        return {
+            "message": "Test Case Generation Job Published!",
+            "test_case_id": generated_test_case.get("test_case_id"),
+        }
 
-
-@app.post("/webhook/run-suite")
-async def run_suite_webhook(request: WebhookRequest):
-    """CI/CD Webhook to trigger a pre-defined test suite."""
-    print(f"Webhook: Received request to run suite '{request.suite_name}'")
-    mock_requirement = (
-        "Log in, verify the main product inventory page is visible, and then log out."
-    )
-
-    generation_request = GenerationRequest(
-        requirement=mock_requirement, target_url=request.target_url
-    )
-    response_data = await generate_test_case(generation_request)
-
-    return {
-        "message": f"Webhook triggered. Job '{response_data.get('test_case_id')}' published."
-    }
+    except Exception as e:
+        # If anything fails (discovery, or all Gemini retries), return a clear error to the UI.
+        print(f"FATAL ERROR in generation process: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/")
