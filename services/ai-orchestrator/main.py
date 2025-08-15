@@ -108,28 +108,32 @@ def call_gemini_service(requirement: str, ui_blueprint: str) -> dict:
 
     Business Requirement: "{requirement}"
     ---
-    UI Blueprint (discovered elements from the page):
+    UI Blueprint (discovered elements from the login page):
     {ui_blueprint}
     ---
-    Generate a JSON test case with the following schema:
+    Generate a JSON test case with the following schema. IMPORTANT: For any "CLICK" action that causes a page navigation, you MUST include a "verifications" block to confirm the navigation was successful.
+
     {{
-      "test_case_id": "string (e.g., TC-LOGIN-LOGOUT-001)",
-      "objective": "string (a concise summary of the requirement)",
-      "parameters": [
-        {{
-          "dataset_name": "valid_credentials",
-          "data": {{ "Username_Input": "standard_user", "Password_Input": "secret_sauce" }}
-        }}
-      ],
+      "test_case_id": "string",
+      "objective": "string",
+      "target_url": "string (the initial URL to visit)",
+      "ui_blueprint": [ {{ "logical_name": "string", "tag": "string", "id": "string", ... }} ],
       "steps": [
-        {{ "step": "integer", "action": "string (ENTER_TEXT, CLICK, or VERIFY_ELEMENT_VISIBLE)", "target_element": "string (must be a logical_name from the blueprint)", "data_key": "string (optional: the key from the dataset, e.g., 'Username_Input')" }}
+        {{ 
+          "step": "integer", 
+          "action": "string (ENTER_TEXT, CLICK, VERIFY_ELEMENT_VISIBLE)", 
+          "target_element": "string (a logical_name from the blueprint)",
+          "data_key": "string (optional)",
+          "verifications": {{  // <-- NEW SCHEMA RULE
+            "element_to_verify": "string (the logical_name of an element that MUST be visible on the NEW page after the click)"
+          }}
+        }}
       ]
     }}
     """
 
     try:
         response = model.generate_content(prompt)
-        # Clean up Gemini's markdown response ` ```json ... ``` `
         cleaned_response = (
             response.text.replace("```json", "").replace("```", "").strip()
         )
@@ -144,6 +148,9 @@ def call_gemini_service(requirement: str, ui_blueprint: str) -> dict:
 
 @app.post("/generate-test-case")
 async def generate_test_case(request: GenerationRequest):
+    """
+    The main generation function. We now inject the FULL blueprint into the test case.
+    """
     print(f"Orchestrator: Received request for URL: {request.target_url}")
 
     # 1. Get UI blueprint from the Discovery Service
@@ -153,8 +160,9 @@ async def generate_test_case(request: GenerationRequest):
     # 2. Call the real Gemini LLM with the context
     generated_test_case = call_gemini_service(request.requirement, ui_blueprint_string)
 
-    # 3. Inject the UI blueprint into the final message for the agent
+    # 3. Inject the blueprint and the target_url into the final message for the agent
     generated_test_case["ui_blueprint"] = ui_blueprint_json["elements"]
+    generated_test_case["target_url"] = request.target_url
 
     # 4. Publish the enriched job to RabbitMQ
     publish_to_rabbitmq(generated_test_case)
