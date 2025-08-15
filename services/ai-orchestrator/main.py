@@ -13,7 +13,7 @@ app = FastAPI()
 try:
     genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
     generation_config = {
-        "temperature": 0.2,
+        "temperature": 0.1,
         "top_p": 1,
         "top_k": 1,
         "max_output_tokens": 4096,
@@ -66,7 +66,7 @@ def publish_to_rabbitmq(message: dict):
             exchange="",
             routing_key="test_generation_queue",
             body=json.dumps(message),
-            properties=pika.BasicProperties(delivery_mode=2),  # make message persistent
+            properties=pika.BasicProperties(delivery_mode=2),
         )
         connection.close()
         print(f" [x] Sent job to RabbitMQ: {message.get('test_case_id')}")
@@ -92,7 +92,7 @@ async def get_ui_blueprint(url: str) -> str:
 
 
 def call_gemini_service(requirement: str, ui_blueprint: str) -> dict:
-    """Builds the MCP and calls the Google Gemini API with the corrected, consistent prompt."""
+    """Builds the MCP and calls the Google Gemini API with a simplified, robust prompt."""
     if not model:
         raise HTTPException(
             status_code=500, detail="Gemini model is not configured. Check API key."
@@ -101,66 +101,41 @@ def call_gemini_service(requirement: str, ui_blueprint: str) -> dict:
     print("MCP: Building context and calling Google Gemini...")
 
     prompt = f"""
-    You are an expert QA Automation Engineer. Your task is to convert a business requirement and a UI element blueprint into a structured JSON test case. You must return only a single, valid JSON object and nothing else.
+    You are an expert QA Automation Engineer. Your primary function is to convert a business requirement and a UI element blueprint into a structured JSON test case.
+    
+    Instructions:
+    1.  Base the test steps EXCLUSIVELY on the provided "Business Requirement".
+    2.  Use the "UI Blueprint" to find the correct `logical_name` for each element you need to interact with.
+    3.  The keys in the `data` object inside `parameters` MUST EXACTLY MATCH the `logical_name` you use in the `steps`.
+    4.  For any "CLICK" action that causes a page navigation, you MUST include a "verifications" block to confirm the navigation was successful by checking for a visible element on the new page.
+    5.  You must return ONLY the raw JSON object and absolutely no other text, explanation, or markdown formatting.
 
-    Business Requirement: "{requirement}"
+    ---
+    Business Requirement:
+    "{requirement}"
     ---
     UI Blueprint (discovered elements from the page):
     {ui_blueprint}
     ---
-    Generate a JSON test case. The keys in the 'data' object inside 'parameters' MUST EXACTLY MATCH the 'logical_name' of the elements from the blueprint that you use in the 'steps'. For example, if a step targets 'user-name', the data key must also be 'user-name'.
-
-    Example Response Format:
-    {{
-      "test_case_id": "TC001",
-      "objective": "Verify a user can log in with valid credentials.",
-      "target_url": "https://www.saucedemo.com",
-      "parameters": [
-        {{
-          "dataset_name": "valid_credentials",
-          "data": {{ 
-            "user-name": "standard_user", 
-            "password": "secret_sauce" 
-          }}
-        }}
-      ],
-      "steps": [
-        {{ 
-          "step": 1, 
-          "action": "ENTER_TEXT", 
-          "target_element": "user-name",
-          "data_key": "user-name"
-        }},
-        {{ 
-          "step": 2, 
-          "action": "ENTER_TEXT", 
-          "target_element": "password",
-          "data_key": "password"
-        }},
-        {{ 
-          "step": 3, 
-          "action": "CLICK", 
-          "target_element": "login-button",
-          "verifications": {{
-            "element_to_verify": "inventory_container"
-          }}
-        }}
-      ]
-    }}
+    
+    Now, generate the JSON test case based on these instructions.
     """
 
     try:
         response = model.generate_content(prompt)
-        # Clean up Gemini's markdown response ` ```json ... ``` `
+        # It's crucial to clean the response as Gemini can wrap it in markdown
         cleaned_response = (
             response.text.replace("```json", "").replace("```", "").strip()
         )
         print("Gemini API call successful.")
         return json.loads(cleaned_response)
     except Exception as e:
-        print(f"ERROR: Gemini API call or JSON parsing failed: {e}")
+        print(
+            f"ERROR: Gemini API call or JSON parsing failed: {e}. Raw response: {response.text}"
+        )
         raise HTTPException(
-            status_code=500, detail="Failed to generate test case from AI model."
+            status_code=500,
+            detail="Failed to generate a valid test case from the AI model.",
         )
 
 
@@ -169,18 +144,15 @@ async def generate_test_case(request: GenerationRequest):
     """The main generation function that assembles and publishes the job."""
     print(f"Orchestrator: Received request for URL: {request.target_url}")
 
-    # 1. Get UI blueprint from the Discovery Service
     ui_blueprint_string = await get_ui_blueprint(request.target_url)
     ui_blueprint_json = json.loads(ui_blueprint_string)
 
-    # 2. Call the real Gemini LLM with the context
     generated_test_case = call_gemini_service(request.requirement, ui_blueprint_string)
 
-    # 3. Inject the blueprint and the target_url into the final message for the agent
+    # Inject the blueprint and the target_url into the final message for the agent
     generated_test_case["ui_blueprint"] = ui_blueprint_json["elements"]
     generated_test_case["target_url"] = request.target_url
 
-    # 4. Publish the enriched job to RabbitMQ
     publish_to_rabbitmq(generated_test_case)
 
     return {
@@ -193,7 +165,6 @@ async def generate_test_case(request: GenerationRequest):
 async def run_suite_webhook(request: WebhookRequest):
     """CI/CD Webhook to trigger a pre-defined test suite."""
     print(f"Webhook: Received request to run suite '{request.suite_name}'")
-    # TODO: This is a stub. A real implementation would fetch pre-defined tests from the DB.
     mock_requirement = (
         "Log in, verify the main product inventory page is visible, and then log out."
     )
