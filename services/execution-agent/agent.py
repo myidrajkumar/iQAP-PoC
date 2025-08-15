@@ -18,7 +18,8 @@ DB_USER = os.getenv("POSTGRES_USER")
 DB_PASS = os.getenv("POSTGRES_PASSWORD")
 DB_HOST = "postgres"
 
-# MinIO Configuration (kept for future visual regression implementation)
+# MinIO Configuration is defined but not used in this specific test logic.
+# It is kept for the "Visual Regression" feature on the roadmap.
 MINIO_HOST = "minio:9000"
 MINIO_ACCESS_KEY = os.getenv("MINIO_ROOT_USER")
 MINIO_SECRET_KEY = os.getenv("MINIO_ROOT_PASSWORD")
@@ -36,7 +37,7 @@ def write_result_to_db(objective: str, status: str, test_case_id: str):
             dbname=DB_NAME, user=DB_USER, password=DB_PASS, host=DB_HOST
         )
         cursor = conn.cursor()
-        # For this version, we simplify the DB write to the most critical fields
+        # For this version, we write the most critical fields to the database.
         sql = """INSERT INTO test_results (objective, status, test_case_id, timestamp) 
                  VALUES (%s, %s, %s, NOW());"""
         cursor.execute(sql, (objective, status, test_case_id))
@@ -50,15 +51,16 @@ def write_result_to_db(objective: str, status: str, test_case_id: str):
             conn.close()
 
 
-def find_element_with_healing(page, target_name: str, ui_blueprint: list):
+def find_element_locator(page, target_name: str, ui_blueprint: list):
     """
-    Dynamically finds a locator from the UI blueprint.
+    Dynamically finds a Playwright locator from the UI blueprint provided by the AI.
     """
     target_element_data = next(
         (el for el in ui_blueprint if el.get("logical_name") == target_name), None
     )
 
-    # A special case for elements not on the initial page blueprint.
+    # A map of known elements on pages other than the initial one.
+    # This is a temporary solution until a more advanced Discovery Service is built.
     if not target_element_data:
         known_elements = {
             "inventory_container": {"id": "inventory_container"},
@@ -79,94 +81,105 @@ def find_element_with_healing(page, target_name: str, ui_blueprint: list):
         print(f"  [Locator] Using primary selector: '{selector}'")
         return page.locator(selector)
 
-    # Fallback healing strategies would be added here...
+    # Future self-healing strategies (e.g., using text, placeholder) would be added here.
 
-    raise Exception(
-        f"Self-healing failed. Could not determine a stable locator for '{target_name}'."
-    )
+    raise Exception(f"Could not determine a stable locator for '{target_name}'.")
 
 
 def run_test_case(test_case_json: dict):
     """
-    Takes a JSON test case, executes it with more robust waiting logic.
+    Takes a JSON test case and executes it for each parameter set provided by the AI.
     """
-    test_case_id = test_case_json.get("test_case_id", "UNKNOWN_TC")
+    test_case_id_base = test_case_json.get("test_case_id", "UNKNOWN_TC")
     ui_blueprint = test_case_json.get("ui_blueprint", [])
     target_url = test_case_json.get("target_url", "https://www.saucedemo.com")
-    print(f"\n--- Starting Test Case: {test_case_id} ---")
 
-    status = "FAIL"  # Default status
+    # Loop through the AI-provided data parameter sets
+    parameter_sets = test_case_json.get("parameters", [{}])
+    if (
+        not parameter_sets
+    ):  # Ensure there's at least one run even if parameters are missing
+        parameter_sets = [{"dataset_name": "default", "data": {}}]
 
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-            # wait_until="domcontentloaded" can be more reliable than the default "load"
-            page.goto(target_url, timeout=60000, wait_until="domcontentloaded")
+    for params in parameter_sets:
+        dataset_name = params.get("dataset_name", "default")
+        dataset = params.get("data", {})
+        run_id = f"{test_case_id_base}-{dataset_name}"
 
-            for step in test_case_json.get("steps", []):
-                action = step.get("action")
-                target_name = step.get("target_element")
-                data_key = step.get("data_key")
+        print(f"\n--- Starting Test Run: {run_id} ---")
+        status = "FAIL"  # Default status for each run
 
-                dataset = {
-                    "Username_Input": "standard_user",
-                    "Password_Input": "secret_sauce",
-                }
-                data = dataset.get(data_key, "") if data_key else ""
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                page.goto(target_url, timeout=60000, wait_until="domcontentloaded")
 
-                print(f"Executing Step {step.get('step')}: {action} on '{target_name}'")
+                for step in test_case_json.get("steps", []):
+                    action = step.get("action")
+                    target_name = step.get("target_element")
+                    data_key = step.get("data_key")
 
-                element_locator = find_element_with_healing(
-                    page, target_name, ui_blueprint
-                )
+                    # Use the data from the current parameter set
+                    data_to_use = dataset.get(data_key, "") if data_key else ""
 
-                # Always wait for the element to be ready before interacting
-                expect(element_locator).to_be_visible(timeout=10000)
+                    print(
+                        f"Executing Step {step.get('step')}: {action} on '{target_name}'"
+                    )
 
-                if action == "ENTER_TEXT":
-                    element_locator.fill(data)
-                elif action == "CLICK":
-                    element_locator.click()
+                    element_locator = find_element_locator(
+                        page, target_name, ui_blueprint
+                    )
 
-                    # After clicking, robustly verify the next page has loaded
-                    verifications = step.get("verifications")
-                    if verifications and verifications.get("element_to_verify"):
-                        verify_target = verifications["element_to_verify"]
-                        print(
-                            f"  [Verify] Waiting for element '{verify_target}' on new page..."
-                        )
+                    # Always wait for the element to be ready before interacting
+                    expect(element_locator).to_be_visible(timeout=10000)
 
-                        verification_locator = find_element_with_healing(
-                            page, verify_target, ui_blueprint
-                        )
+                    if action == "ENTER_TEXT":
+                        element_locator.fill(data_to_use)
+                    elif action == "CLICK":
+                        element_locator.click()
 
-                        # Use a generous timeout for page transition verification
-                        expect(verification_locator).to_be_visible(timeout=15000)
+                        # After clicking, robustly verify the next page has loaded
+                        verifications = step.get("verifications")
+                        if verifications and verifications.get("element_to_verify"):
+                            # Hardcoded expected URL for this specific test case.
+                            expected_url_part = "**/inventory.html"
+                            print(
+                                f"  [Verify] Waiting for navigation to URL containing '{expected_url_part}'..."
+                            )
+                            page.wait_for_url(expected_url_part, timeout=10000)
+                            print("  [Verify] Navigation successful.")
 
-                        print(
-                            f"  [Verify] Success! Element '{verify_target}' is visible."
-                        )
+                            verify_target = verifications["element_to_verify"]
+                            print(
+                                f"  [Verify] Now waiting for element '{verify_target}'..."
+                            )
+                            verification_locator = find_element_locator(
+                                page, verify_target, ui_blueprint
+                            )
+                            expect(verification_locator).to_be_visible(timeout=5000)
+                            print(
+                                f"  [Verify] Success! Element '{verify_target}' is visible."
+                            )
 
-                elif action == "VERIFY_ELEMENT_VISIBLE":
-                    expect(element_locator).to_be_visible()
+                    print(
+                        f"  [SUCCESS] Action '{action}' on '{target_name}' successful."
+                    )
 
-                print(f"  [SUCCESS] Action '{action}' on '{target_name}' successful.")
+                print("\nAll test steps completed successfully.")
+                status = "PASS"
+                browser.close()
 
-            print("\nAll steps completed successfully.")
-            status = "PASS"
-            browser.close()
-
-    except Exception as e:
-        print(f"[FAIL] Test finished with an unhandled error: {e}")
-        status = "FAIL"
-    finally:
-        print(f"--- Test Case Finished with Status: {status} ---")
-        write_result_to_db(
-            objective=test_case_json.get("objective", "N/A"),
-            status=status,
-            test_case_id=test_case_id,
-        )
+        except Exception as e:
+            print(f"[FAIL] Test run finished with an unhandled error: {e}")
+            status = "FAIL"
+        finally:
+            print(f"--- Test Run Finished with Status: {status} ---")
+            write_result_to_db(
+                objective=test_case_json.get("objective", "N/A") + f" ({dataset_name})",
+                status=status,
+                test_case_id=run_id,
+            )
 
 
 def main():
