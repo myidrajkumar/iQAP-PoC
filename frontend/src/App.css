@@ -5,6 +5,7 @@ body {
   padding: 20px;
   color: #333;
 }
+
 .container {
   max-width: 1200px;
   margin: 0 auto;
@@ -13,26 +14,36 @@ body {
   border-radius: 8px;
   box-shadow: 0 4px 12px rgba(0,0,0,0.1);
 }
+
 header h1 {
   color: #1a2a4d;
   text-align: center;
+  margin-top: 0;
   margin-bottom: 2rem;
 }
+
 .form-grid {
   display: grid;
   grid-template-columns: 1fr 1.5fr;
-  gap: 2rem;
+  gap: 2.5rem;
 }
+
 .form-left, .form-right {
   display: flex;
   flex-direction: column;
 }
+
+.form-right h3 {
+  margin-top: 0;
+}
+
 label {
   font-weight: 600;
   margin-top: 1rem;
   margin-bottom: 8px;
   color: #555;
 }
+
 input[type="text"], textarea {
   font-family: inherit;
   font-size: 1rem;
@@ -42,10 +53,12 @@ input[type="text"], textarea {
   width: 100%;
   box-sizing: border-box;
 }
+
 textarea {
   resize: vertical;
   min-height: 80px;
 }
+
 button {
   padding: 12px 20px;
   font-size: 1rem;
@@ -58,54 +71,80 @@ button {
   transition: background-color 0.2s;
   margin-top: 1.5rem;
 }
+
 button:hover {
   background-color: #0056b3;
 }
+
 button:disabled {
   background-color: #a9a9a9;
   cursor: not-allowed;
 }
+
 .refresh-btn {
   background-color: #6c757d;
   align-self: flex-end;
   margin-top: 0;
   margin-bottom: 1rem;
   padding: 8px 15px;
+  font-size: 0.9rem;
 }
+
 .refresh-btn:hover {
   background-color: #5a6268;
 }
+
 .results-table-container {
   overflow-y: auto;
-  max-height: 400px;
+  max-height: 400px; /* Makes the table scrollable */
+  border: 1px solid #ddd;
+  border-radius: 4px;
 }
+
 table {
   width: 100%;
   border-collapse: collapse;
 }
+
 th, td {
-  border: 1px solid #ddd;
-  padding: 8px;
+  border-bottom: 1px solid #ddd;
+  padding: 12px 10px;
   text-align: left;
+  white-space: nowrap;
 }
+
+td:nth-child(2) { /* Objective column */
+  white-space: normal;
+}
+
 th {
   background-color: #eef1f4;
   position: sticky;
   top: 0;
+  z-index: 1;
 }
+
 .status-badge {
-  padding: 4px 8px;
+  padding: 4px 10px;
   border-radius: 12px;
   font-size: 0.8rem;
   font-weight: bold;
   color: #fff;
+  text-transform: uppercase;
 }
+
 .status-pass { background-color: #28a745; }
 .status-fail { background-color: #dc3545; }
+.status-baseline_created { background-color: #17a2b8; }
+.status-n\/a { background-color: #6c757d; }
+
+
 .status, .error {
   margin-top: 1rem;
   padding: 10px;
   border-radius: 4px;
+  text-align: center;
 }
+
 .status { color: #004085; background-color: #cce5ff; border: 1px solid #b8daff; }
-.error { color: #d9534f; background-color: #f2dede; border: 1px solid #ebccd1; }
+.error { color: #721c24; background-color: #f8d7da; border: 1px solid #f5c6cb; }

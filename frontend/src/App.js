@@ -3,7 +3,7 @@ import axios from 'axios';
 import './App.css';
 
 function App() {
-  const [requirement, setRequirement] = useState("Verify a user can log in with valid credentials and see the dashboard.");
+  const [requirement, setRequirement] = useState("Verify a user can log in with valid credentials, and then log out.");
   const [targetUrl, setTargetUrl] = useState("https://www.saucedemo.com");
   const [results, setResults] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -30,15 +30,15 @@ function App() {
   const handleGenerate = async () => {
     setIsLoading(true);
     setError('');
-    setStatusMessage('Generating test case...');
+    setStatusMessage('Generating test case via Gemini...');
     try {
       const response = await axios.post(`${orchestratorApiUrl}/generate-test-case`, {
         requirement: requirement,
         target_url: targetUrl,
       });
       setStatusMessage(response.data.message || "Job published successfully!");
-      // Poll for results after a short delay
-      setTimeout(fetchResults, 3000); // Refresh results after 3 seconds
+      // Poll for results after a short delay to allow execution to start
+      setTimeout(fetchResults, 5000);
     } catch (err) {
       const errorMessage = err.response?.data?.detail || "Failed to publish job.";
       setError(`Error: ${errorMessage}`);
@@ -49,10 +49,11 @@ function App() {
 
   return (
     <div className="container">
-      <header><h1>iQAP - Intelligent Quality Assurance Platform v2.0</h1></header>
+      <header><h1>iQAP - Intelligent Quality Assurance Platform</h1></header>
       <main>
         <div className="form-grid">
           <div className="form-left">
+            <h3>Generate New Test</h3>
             <label htmlFor="target-url-input">Target URL:</label>
             <input id="target-url-input" type="text" value={targetUrl} onChange={(e) => setTargetUrl(e.target.value)} />
             <label htmlFor="requirement-input">Business Requirement:</label>
@@ -73,6 +74,7 @@ function App() {
                     <th>ID</th>
                     <th>Objective</th>
                     <th>Status</th>
+                    <th>Visual Status</th>
                     <th>Timestamp</th>
                   </tr>
                 </thead>
@@ -82,10 +84,11 @@ function App() {
                       <td>{result.id}</td>
                       <td>{result.objective}</td>
                       <td><span className={`status-badge status-${result.status?.toLowerCase()}`}>{result.status}</span></td>
+                      <td><span className={`status-badge status-${result.visual_status?.toLowerCase()}`}>{result.visual_status || 'N/A'}</span></td>
                       <td>{new Date(result.timestamp).toLocaleString()}</td>
                     </tr>
                   )) : (
-                    <tr><td colSpan="4">No results found.</td></tr>
+                    <tr><td colSpan="5">No results found. Run a test to see history.</td></tr>
                   )}
                 </tbody>
               </table>
