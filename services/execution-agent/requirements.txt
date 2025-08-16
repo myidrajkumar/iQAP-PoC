@@ -1,3 +1,4 @@
+dotenv
 playwright
 pika
 psycopg2-binary
