@@ -29,7 +29,7 @@ export const useTestApi = () => {
     setError('');
     setStatusMessage('Generating test case via Gemini...');
     try {
-      const response = await axios.post(`${orchestratorApiUrl}/generate-test-case`, {
+      const response = await axios.post(`${orchestratorApiUrl}/api/v1/generate-test-case`, {
         requirement: requirement,
         target_url: targetUrl,
       });

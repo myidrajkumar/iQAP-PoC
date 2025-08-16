@@ -1,4 +1,4 @@
-dotenv
+python-dotenv
 playwright
 pika
 psycopg2-binary

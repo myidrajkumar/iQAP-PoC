@@ -1,7 +1,8 @@
-dotenv
-fastapi
+python-dotenv
+fastapi[all]
 uvicorn[standard]
 pydantic
+pydantic_settings
 pika
 google-generativeai
 httpx
