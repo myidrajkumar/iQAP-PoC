@@ -1,17 +1,25 @@
 import os
-import time
 import psycopg2
 import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from psycopg2.extras import RealDictCursor
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # --- Database Connection Details (from environment variables) ---
+is_docker = os.environ.get("DOCKER_ENV") == "true"
+
+if is_docker:
+    DB_HOST = "iqap-postgres"  # Docker service name for PostgreSQL
+else:
+    DB_HOST = os.getenv("POSTGRES_HOST", "localhost")
 DB_NAME = os.getenv("POSTGRES_DB")
 DB_USER = os.getenv("POSTGRES_USER")
 DB_PASS = os.getenv("POSTGRES_PASSWORD")
-DB_HOST = "postgres"
+DB_PORT = os.getenv("POSTGRES_PORT", "5432")
 
 
 @asynccontextmanager
@@ -91,7 +99,7 @@ def get_db_connection():
     """Establishes and returns a database connection for API calls."""
     try:
         conn = psycopg2.connect(
-            dbname=DB_NAME, user=DB_USER, password=DB_PASS, host=DB_HOST
+            dbname=DB_NAME, user=DB_USER, password=DB_PASS, host=DB_HOST, port=DB_PORT
         )
         return conn
     except psycopg2.OperationalError as e:

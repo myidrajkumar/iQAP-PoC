@@ -1,4 +1,5 @@
 import os
+from dotenv import load_dotenv
 import pika
 import json
 import httpx
@@ -6,6 +7,8 @@ import google.generativeai as genai
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
+
+load_dotenv()
 
 # --- Initialize FastAPI and Gemini Model ---
 app = FastAPI()
@@ -24,8 +27,17 @@ except Exception as e:
     model = None
 
 # --- Service URLs and RabbitMQ Configuration ---
-DISCOVERY_SERVICE_URL = "http://discovery-service:8001/discover"
-RABBITMQ_HOST = "rabbitmq"
+is_docker = os.environ.get("DOCKER_ENV") == "true"
+print(f"Running in Docker: {is_docker}")
+
+if is_docker:
+    DISCOVERY_SERVICE_URL = "http://discovery-service:8001/discover"
+    RABBITMQ_HOST = "iqap-rabbitmq"  # Docker service name for RabbitMQ
+else:
+    DISCOVERY_SERVICE_URL = "http://localhost:8001/discover"
+    RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "localhost")
+
+
 RABBITMQ_USER = os.getenv("RABBITMQ_DEFAULT_USER", "rabbit_user")
 RABBITMQ_PASS = os.getenv("RABBITMQ_DEFAULT_PASS", "rabbit_password")
 credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASS)
@@ -97,7 +109,7 @@ def publish_to_rabbitmq(message: dict):
 
 
 async def get_ui_blueprint(url: str) -> str:
-    print("Contacting Discovery Service...")
+    print(f"Contacting Discovery Service of {DISCOVERY_SERVICE_URL}...")
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
@@ -105,7 +117,7 @@ async def get_ui_blueprint(url: str) -> str:
             )
             response.raise_for_status()
             print("Discovery Service returned blueprint successfully.")
-            return json.dumps(response.json(), indent=2)
+            return json.dumps(response.json(), indent=2).strip()
     except httpx.RequestError as e:
         raise HTTPException(status_code=503, detail="Discovery Service unavailable.")
 
@@ -124,15 +136,15 @@ def generate_test_case_from_ai(requirement: str, ui_blueprint: str) -> dict:
     
     RULES:
     1.  Base the test steps EXCLUSIVELY on the provided "Business Requirement".
-    2.  Use the "UI Blueprint" to find the correct `logical_name` for each element.
+    2.  Use the "UI Blueprint" to find the correct "logical_name" for each element.
     3.  You MUST use the key "action" for the action type. The allowed values for "action" are ONLY: "ENTER_TEXT", "CLICK", "VERIFY_ELEMENT_VISIBLE".
-    4.  The keys in the `data` object inside `parameters` MUST EXACTLY MATCH the `logical_name` you use in the `steps`.
+    4.  The keys in the "data" object inside "parameters" MUST EXACTLY MATCH the "logical_name" you use in the "steps".
     5.  A "CLICK" that navigates MUST have a "verifications" block.
     6.  You MUST return ONLY the raw JSON object and absolutely no other text or markdown.
 
     ---
     Business Requirement:
-    "{requirement}"
+    {requirement}
     ---
     UI Blueprint:
     {ui_blueprint}
@@ -150,6 +162,7 @@ def generate_test_case_from_ai(requirement: str, ui_blueprint: str) -> dict:
 
         result = json.loads(cleaned_response)
         required_keys = ["test_case_id", "objective", "parameters", "steps"]
+        print(f"Gemini response: {result}")
         if all(key in result for key in required_keys):
             print("Gemini API call successful and response is valid.")
             return result
@@ -170,7 +183,10 @@ async def generate_test_case(request: GenerationRequest):
 
     try:
         ui_blueprint_string = await get_ui_blueprint(request.target_url)
-        ui_blueprint_json = json.loads(ui_blueprint_string)
+        ui_blueprint_json = json.loads(ui_blueprint_string.strip())
+        print(
+            f"Orchestrator: UI Blueprint json received successfully. {ui_blueprint_json}"
+        )
 
         generated_test_case = generate_test_case_from_ai(
             request.requirement, ui_blueprint_string

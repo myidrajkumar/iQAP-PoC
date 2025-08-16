@@ -1,12 +1,21 @@
+from dotenv import load_dotenv
 import pika
 import os
 import time
 import json
 
+load_dotenv()
+
 
 def main():
     # --- RabbitMQ Configuration ---
-    RABBITMQ_HOST = "rabbitmq"
+    is_docker = os.environ.get("DOCKER_ENV") == "true"
+
+    if is_docker:
+        RABBITMQ_HOST = "iqap-rabbitmq"  # Docker service name for RabbitMQ
+    else:
+        RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "localhost")
+
     RABBITMQ_USER = os.getenv("RABBITMQ_DEFAULT_USER", "rabbit_user")
     RABBITMQ_PASS = os.getenv("RABBITMQ_DEFAULT_PASS", "rabbit_password")
     credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASS)

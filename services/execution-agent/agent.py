@@ -1,3 +1,4 @@
+from dotenv import load_dotenv
 import pika
 import os
 import time
@@ -5,14 +6,23 @@ import json
 import psycopg2
 from playwright.sync_api import sync_playwright, expect, Error as PlaywrightError
 
+load_dotenv()
+
 # --- Configurations ---
-RABBITMQ_HOST = "rabbitmq"
+is_docker = os.environ.get("DOCKER_ENV") == "true"
+
+if is_docker:
+    DB_HOST = "iqap-postgres"  # Docker service name for PostgreSQL
+    RABBITMQ_HOST = "iqap-rabbitmq"  # Docker service name for RabbitMQ
+else:
+    DB_HOST = os.getenv("POSTGRES_HOST", "localhost")
+    RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "localhost")
+
 RABBITMQ_USER = os.getenv("RABBITMQ_DEFAULT_USER", "rabbit_user")
 RABBITMQ_PASS = os.getenv("RABBITMQ_DEFAULT_PASS", "rabbit_password")
 DB_NAME = os.getenv("POSTGRES_DB")
 DB_USER = os.getenv("POSTGRES_USER")
 DB_PASS = os.getenv("POSTGRES_PASSWORD")
-DB_HOST = "postgres"
 IS_HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
 
 
