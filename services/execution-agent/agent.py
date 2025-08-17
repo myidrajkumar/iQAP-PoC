@@ -59,7 +59,9 @@ def find_element_locator(page, target_name: str, ui_blueprint: list):
     )
 
     if not target_element_data:
-        known_elements = {"inventory_container": {"id": "inventory_container"}}
+        known_elements = {
+            "inventory_container": {"data-test": "inventory-container"},
+        }
         if target_name in known_elements:
             target_element_data = known_elements[target_name]
         else:
@@ -67,6 +69,13 @@ def find_element_locator(page, target_name: str, ui_blueprint: list):
                 f"Logical name '{target_name}' not found in the provided UI blueprint or known elements."
             )
 
+    # Strategy 1: Use 'data-test' attribute if available (most reliable)
+    if target_element_data.get("data-test"):
+        selector = f"[data-test='{target_element_data['data-test']}']"
+        print(f"  [Locator] Using data-test selector: '{selector}'")
+        return page.locator(selector)
+
+    # Strategy 2: Use 'id' if available
     if target_element_data.get("id"):
         selector = f"#{target_element_data['id']}"
         print(f"  [Locator] Using primary selector: '{selector}'")
