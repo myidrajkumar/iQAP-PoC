@@ -1,0 +1,23 @@
+sequenceDiagram
+    participant User
+    participant Web UI
+    participant AI Orchestrator (MCP)
+    participant LLM
+    participant Execution Agent
+
+    User->>Web UI: Enters requirement & clicks Generate
+    Web UI->>AI Orchestrator (MCP): ① POST /generate-test
+    Note over AI Orchestrator (MCP): Gathers context (UI blueprint, examples, schema)
+    AI Orchestrator (MCP)->>LLM: ② Sends full MCP package
+    LLM-->>AI Orchestrator (MCP): ③ Returns structured JSON test case
+    Note over AI Orchestrator (MCP): Publishes job to a message queue
+    
+    %% Asynchronous Execution Begins %%
+    
+    Execution Agent->>Execution Agent: ④ Receives job from queue
+    Execution Agent->>Execution Agent: ⑤ Executes test steps in browser (with self-healing)
+    Note over Execution Agent: Reports results & artifacts back to system
+
+    %% Final Update %%
+    
+    Web UI->>Web UI: Dashboard updates in real-time to show "Test Complete"

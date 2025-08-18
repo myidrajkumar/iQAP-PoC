@@ -1,0 +1,14 @@
+stateDiagram
+  direction TB
+  [*] --> Pending:"User submits requirement"
+  Pending --> Generating:"Generate button clicked"
+  Generating --> QueuedForExecution:"MCP generation successful"
+  Generating --> GenerationFailed:"LLM call or validation fails"
+  QueuedForExecution --> Running:"Execution Orchestrator dispatches job"
+  Running --> Passed:"All steps executed successfully"
+  Running --> Failed:"A step fails and cannot be self-healed"
+  GenerationFailed --> [*]
+  Passed --> [*]
+  Failed --> [*]
+
+

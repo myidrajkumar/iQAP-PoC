@@ -1,0 +1,27 @@
+graph TD
+    %% Define the logical groups using subgraphs
+    subgraph External Actors
+        QA["QA Engineer / PM"]
+        Dev["Software Developer"]
+    end
+    
+    subgraph iQAP Ecosystem
+        iQAP["iQAP Platform"]
+    end
+
+    subgraph External Systems
+        App["Target Application<br>(Any Tech Stack)"]
+        LLM["LLM Provider<br>(OpenAI, Google, etc.)"]
+        CICD["CI/CD Pipeline<br>(Jenkins, GitLab)"]
+        Jira["Bug Tracker<br>(Jira)"]
+    end
+
+    %% Define the interactions with plain text labels
+    QA -- "Defines requirements & views reports" --> iQAP
+    
+    iQAP -- "Tests against" --> App
+    iQAP -- "Gets intelligence from" --> LLM
+    iQAP -- "Creates bug reports in" --> Jira
+    
+    CICD -- "Triggers test runs on" --> iQAP
+    Jira -- "Notifies" --> Dev

@@ -1,0 +1,35 @@
+graph TD
+    subgraph "Presentation Layer"
+        A["Web Frontend UI"]
+    end
+
+    subgraph "Integration Layer"
+        B["API Gateway"]
+        F["Reporting Service"]
+    end
+
+    subgraph "Intelligence Core"
+        C["AI Orchestration Service (MCP)"]
+        D["Discovery Service"]
+    end
+
+    subgraph "Execution Core"
+        E["Execution Orchestrator"]
+        J["Execution Agent Pool"]
+    end
+
+    subgraph "Data & Storage Layer"
+        G["Relational DB (PostgreSQL)"]
+        H["Vector DB (ChromaDB)"]
+        I["Object Storage (S3/MinIO)"]
+    end
+    
+    A --> B
+    B --> C
+    B --> E
+    C --> D
+    C --> H
+    C --> G
+    E --> J
+    J --> I
+    F --> G

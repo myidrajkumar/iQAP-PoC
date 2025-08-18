@@ -1,0 +1,26 @@
+flowchart TD
+    %% Define Styles
+    classDef startend fill:#007bff,color:#fff,stroke:#0056b3,stroke-width:2px;
+    classDef process fill:#f4f7f9,stroke:#ccc;
+    classDef decision fill:#ffc107,stroke:#c89400;
+    classDef io fill:#28a745,color:#fff,stroke:#1e7e34;
+    
+    %% Diagram Flow
+    A[Start]:::startend --> B{User enters requirement<br>in Web UI};
+    B --> C[API Gateway receives request];
+    C --> D[AI Orchestrator builds MCP];
+    D --> E{Call LLM Provider};
+    E -- Success --> F[Receive structured JSON test case];
+    F --> G[Publish Job to Execution Queue];
+    G --> H[Execution Agent picks up Job];
+    H --> I[Execute Test on Target App];
+    I --> J{Self-Healing Needed?};
+    J -- No --> K[Continue Execution];
+    J -- Yes --> L[Apply Self-Healing Logic];
+    L --> K;
+    K --> M[Record video/screenshots to Object Storage];
+    M --> N[Report results to Reporting Service];
+    N --> O[End: Dashboard is updated]:::startend;
+
+    E -- Failure --> P[Log Error & Notify User];
+    P --> Q[End]:::startend;

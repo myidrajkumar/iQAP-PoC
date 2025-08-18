@@ -1,0 +1,42 @@
+graph TD
+    subgraph User Facing
+        A[Web Frontend UI<br>React]
+    end
+
+    subgraph Core Services
+        B[API Gateway<br>Manages API traffic]
+        C[AI Orchestration Service<br>MCP Brain]
+        D[Discovery Service<br>Crawls & Blueprints Apps]
+        E[Execution Orchestrator<br>Manages Test Agents]
+        F[Reporting Service<br>Analytics & Dashboards]
+    end
+
+    subgraph Data Stores
+        G[Relational DB<br>PostgreSQL for data]
+        H[Vector DB<br>ChromaDB for AI context]
+        I[Object Storage<br>MinIO/S3 for artifacts]
+    end
+    
+    subgraph Execution Plane
+        J[Execution Agent Pool<br>Scalable Docker Containers running Playwright]
+    end
+
+    subgraph External Integrations
+        K[CI/CD Pipelines<br>Jenkins, GitLab, etc.]
+        L[Bug Trackers<br>Jira]
+        M[LLM Provider<br>OpenAI, Google, etc.]
+    end
+
+    %% Connections
+    A --> B
+    B --> C
+    B --> F
+    C --> D
+    C --> G
+    C --> H
+    C --> M
+    E --> J
+    J --> I
+    F --> G
+    F --> L
+    K --> B

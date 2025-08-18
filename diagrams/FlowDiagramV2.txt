@@ -1,0 +1,37 @@
+flowchart TD
+    %% Define Node Shapes
+    A((Start))
+    B{User enters requirement}
+    C[API Gateway receives request]
+    D[AI Orchestrator builds MCP]
+    E{Call LLM Provider}
+    F[Receive structured JSON]
+    G[Publish Job to Queue]
+    H[Execution Agent picks up Job]
+    I[Execute Test Steps]
+    J{Self-Healing Needed?}
+    K[Continue Execution]
+    L[Apply Self-Healing Logic]
+    M[Record Artifacts to Storage]
+    N[Report Final Result]
+    O((End))
+    P[Log Error & Notify User]
+
+    %% Define Connections
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --o|Success| F
+    E --x|Failure| P
+    F --> G
+    G --> H
+    H --> I
+    I --> J
+    J -- No --> K
+    J -- Yes --> L
+    L --> K
+    K --> M
+    M --> N
+    N --> O
+    P --> O
