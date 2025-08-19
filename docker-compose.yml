@@ -93,8 +93,8 @@ services:
     container_name: pgadmin4
     restart: always
     environment:
-      PGADMIN_DEFAULT_EMAIL: someid
-      PGADMIN_DEFAULT_PASSWORD: somepassword
+      PGADMIN_DEFAULT_EMAIL: myidrajkumar@gmail.com
+      PGADMIN_DEFAULT_PASSWORD: midas256
     ports:
       - "8900:80"
 

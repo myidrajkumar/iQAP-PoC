@@ -1,10 +1,13 @@
 from dotenv import load_dotenv
 import pika
 import os
+from minio import Minio
 import time
 import json
 import psycopg2
 from playwright.sync_api import sync_playwright, expect, Error as PlaywrightError
+from PIL import Image, ImageChops
+import io
 
 load_dotenv()
 
@@ -24,6 +27,30 @@ DB_NAME = os.getenv("POSTGRES_DB")
 DB_USER = os.getenv("POSTGRES_USER")
 DB_PASS = os.getenv("POSTGRES_PASSWORD")
 IS_HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
+
+# --- MinIO Configuration ---
+MINIO_HOST = "minio:9000"
+MINIO_ACCESS_KEY = os.getenv("MINIO_ROOT_USER")
+MINIO_SECRET_KEY = os.getenv("MINIO_ROOT_PASSWORD")
+VISUAL_BUCKET_NAME = "visual-baselines"
+
+# Initialize MinIO Client
+try:
+    minio_client = Minio(
+        MINIO_HOST,
+        access_key=MINIO_ACCESS_KEY,
+        secret_key=MINIO_SECRET_KEY,
+        secure=False,
+    )
+    print("Execution Agent: Successfully initialized MinIO client.")
+    # Ensure the bucket exists
+    found = minio_client.bucket_exists(VISUAL_BUCKET_NAME)
+    if not found:
+        minio_client.make_bucket(VISUAL_BUCKET_NAME)
+        print(f"Execution Agent: Created MinIO bucket '{VISUAL_BUCKET_NAME}'.")
+except Exception as e:
+    print(f"Execution Agent: CRITICAL - Failed to initialize MinIO client: {e}")
+    minio_client = None
 
 
 # --- DB Function ---
@@ -46,6 +73,44 @@ def write_result_to_db(objective: str, status: str, test_case_id: str):
     finally:
         if conn is not None:
             conn.close()
+
+
+def handle_visual_test(page, test_case_id: str, step_name: str):
+    """Orchestrates a single visual regression test against MinIO."""
+    if not minio_client:
+        return "N/A", "MinIO client not configured."
+
+    screenshot_bytes = page.screenshot()
+    object_name = f"{test_case_id}/{step_name}.png"
+
+    try:
+        minio_client.stat_object(VISUAL_BUCKET_NAME, object_name)
+        baseline_response = minio_client.get_object(VISUAL_BUCKET_NAME, object_name)
+        baseline_bytes = baseline_response.read()
+
+        img1 = Image.open(io.BytesIO(baseline_bytes)).convert("RGB")
+        img2 = Image.open(io.BytesIO(screenshot_bytes)).convert("RGB")
+
+        if (
+            img1.size != img2.size
+            or ImageChops.difference(img1, img2).getbbox() is not None
+        ):
+            print("[VISUAL] FAIL: Images do not match baseline.")
+            return "FAIL", "Visuals do not match baseline."
+        else:
+            print("  [VISUAL] PASS: Images match baseline.")
+            return "PASS", "Images match baseline."
+
+    except Exception:
+        print("  [VISUAL] No baseline found. Creating new one.")
+        minio_client.put_object(
+            VISUAL_BUCKET_NAME,
+            object_name,
+            io.BytesIO(screenshot_bytes),
+            len(screenshot_bytes),
+            "image/png",
+        )
+        return "BASELINE_CREATED", f"New baseline created: {object_name}"
 
 
 # --- Locator Function ---
@@ -164,6 +229,9 @@ def run_test_case(test_case_json: dict):
                         f"  [SUCCESS] Action '{action}' on '{target_name}' successful."
                     )
 
+                print("\nPerforming Visual Test...")
+                visual_status, _ = handle_visual_test(page, run_id, "final_page_view")
+                
                 print("\nAll test steps completed successfully.")
                 status = "PASS"
                 browser.close()
