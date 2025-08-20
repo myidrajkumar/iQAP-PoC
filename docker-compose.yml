@@ -25,6 +25,7 @@ services:
     env_file: .env
     environment:
       - PYTHONUNBUFFERED=1
+      - DOCKER_ENV=true
     depends_on:
       - rabbitmq
       - discovery-service
@@ -37,6 +38,7 @@ services:
     shm_size: '2gb'
     environment:
       - PYTHONUNBUFFERED=1
+      - DOCKER_ENV=true
 
   execution-orchestrator:
     container_name: execution-orchestrator
@@ -46,6 +48,7 @@ services:
     env_file: .env
     environment:
       - PYTHONUNBUFFERED=1
+      - DOCKER_ENV=true
     depends_on:
       - rabbitmq
 
@@ -59,7 +62,7 @@ services:
     env_file: .env
     environment:
       - PYTHONUNBUFFERED=1
-      - HEADLESS=true
+      - DOCKER_ENV=true
     depends_on:
       - execution-orchestrator
       - postgres
@@ -75,6 +78,7 @@ services:
     env_file: .env
     environment:
       - PYTHONUNBUFFERED=1
+      - DOCKER_ENV=true
     depends_on:
       - postgres
 

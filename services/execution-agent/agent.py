@@ -26,7 +26,13 @@ RABBITMQ_PASS = os.getenv("RABBITMQ_DEFAULT_PASS", "rabbit_password")
 DB_NAME = os.getenv("POSTGRES_DB")
 DB_USER = os.getenv("POSTGRES_USER")
 DB_PASS = os.getenv("POSTGRES_PASSWORD")
-IS_HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
+
+# Force headless mode in Docker environment to avoid display issues
+if is_docker:
+    IS_HEADLESS = True
+    print("Execution Agent: Running in Docker - forcing headless mode")
+else:
+    IS_HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
 
 # --- MinIO Configuration ---
 MINIO_HOST = "minio:9000"
@@ -54,7 +60,9 @@ except Exception as e:
 
 
 # --- DB Function ---
-def write_result_to_db(objective: str, status: str, test_case_id: str):
+def write_result_to_db(
+    objective: str, status: str, test_case_id: str, visual_status: str = None
+):
     """Connects to the PostgreSQL database and inserts a test result."""
     conn = None
     try:
@@ -62,9 +70,10 @@ def write_result_to_db(objective: str, status: str, test_case_id: str):
             dbname=DB_NAME, user=DB_USER, password=DB_PASS, host=DB_HOST
         )
         cursor = conn.cursor()
-        sql = """INSERT INTO test_results (objective, status, test_case_id, timestamp) 
-                 VALUES (%s, %s, %s, NOW());"""
-        cursor.execute(sql, (objective, status, test_case_id))
+        sql = """INSERT INTO test_results
+                 (objective, status, test_case_id, visual_status, timestamp)
+                 VALUES (%s, %s, %s, %s, NOW());"""
+        cursor.execute(sql, (objective, status, test_case_id, visual_status))
         conn.commit()
         print(f"  [DB] Result for {test_case_id} saved to database.")
         cursor.close()
@@ -180,13 +189,30 @@ def run_test_case(test_case_json: dict):
 
         print(f"\n--- Starting Test Run: {run_id} ---")
         status = "FAIL"
+        visual_status = "N/A"
         page = None
 
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(
-                    headless=IS_HEADLESS, slow_mo=500 if not IS_HEADLESS else 0
-                )
+                # Configure browser launch options for containers
+                launch_options = {
+                    "headless": IS_HEADLESS,
+                    "slow_mo": 500 if not IS_HEADLESS else 0,
+                }
+
+                # Add additional arguments for Docker/Linux containers
+                if is_docker or IS_HEADLESS:
+                    launch_options["args"] = [
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-accelerated-2d-canvas",
+                        "--no-first-run",
+                        "--no-zygote",
+                        "--disable-gpu",
+                    ]
+
+                browser = p.chromium.launch(**launch_options)
                 page = browser.new_page()
                 page.goto(target_url, timeout=60000)
 
@@ -231,7 +257,7 @@ def run_test_case(test_case_json: dict):
 
                 print("\nPerforming Visual Test...")
                 visual_status, _ = handle_visual_test(page, run_id, "final_page_view")
-                
+
                 print("\nAll test steps completed successfully.")
                 status = "PASS"
                 browser.close()
@@ -239,6 +265,7 @@ def run_test_case(test_case_json: dict):
         except Exception as e:
             print(f"[FAIL] Test run finished with an unhandled error: {e}")
             status = "FAIL"
+            visual_status = "N/A"
             if page and not page.is_closed():
                 screenshot_path = (
                     f"debug/failure_{run_id}_{time.strftime('%Y%m%d-%H%M%S')}.png"
@@ -249,7 +276,10 @@ def run_test_case(test_case_json: dict):
             print(f"--- Test Run Finished with Status: {status} ---")
             final_objective = objective + f" ({dataset_name})"
             write_result_to_db(
-                objective=final_objective, status=status, test_case_id=run_id
+                objective=final_objective,
+                status=status,
+                test_case_id=run_id,
+                visual_status=visual_status,
             )
 
 

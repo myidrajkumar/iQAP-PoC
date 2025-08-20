@@ -21,7 +21,7 @@ const ResultsTable = ({ results, onRefresh }) => (
               <td>{result.id}</td>
               <td>{result.objective}</td>
               <td><span className={`status-badge status-${result.status?.toLowerCase()}`}>{result.status}</span></td>
-              <td><span className={`status-badge status-${result.visual_status?.toLowerCase()}`}>{result.visual_status || 'N/A'}</span></td>
+              <td><span className={`status-badge status-${result.visual_status?.toLowerCase()?.replace(/_/g, '-').replace('/', '-') || 'n-a'}`}>{result.visual_status || 'N/A'}</span></td>
               <td>{new Date(result.timestamp).toLocaleString()}</td>
             </tr>
           )) : (

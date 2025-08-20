@@ -94,7 +94,8 @@ th { background-color: #eef1f4; position: sticky; top: 0; z-index: 1; }
 .status-pass { background-color: #28a745; }
 .status-fail { background-color: #dc3545; }
 .status-baseline_created { background-color: #17a2b8; }
-.status-n\/a { background-color: #6c757d; }
+.status-baseline-created { background-color: #17a2b8; }
+.status-n-a { background-color: #6c757d; }
 
 .status, .error {
   margin-top: 1rem;
