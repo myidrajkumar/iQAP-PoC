@@ -113,39 +113,12 @@ services:
     container_name: iqap-minio
     image: minio/minio:latest
     ports:
-      - "9000:9000"   # API Port
-      - "9001:9001"   # Console Port
+      - "9000:9000"
+      - "9001:9001"
     volumes:
       - minio_data:/data
     env_file: .env
     command: server /data --console-address ":9001"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:9000/minio/health/live"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  minio-setup:
-    image: minio/mc
-    depends_on:
-      minio:
-        condition: service_healthy
-    env_file: .env
-    entrypoint: >
-      /bin/sh -c "
-      set -e;
-      echo '--- Waiting for MinIO to be ready...';
-      until mc alias set myminio http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD}; do
-        echo '... MinIO not ready, waiting 5 seconds';
-        sleep 5;
-      done;
-      echo 'Host configured successfully.';
-      mc mb myminio/test-artifacts --ignore-existing;
-      echo 'Bucket created or already exists.';
-      mc anonymous set download myminio/test-artifacts;
-      echo 'Bucket policy set to public download.';
-      echo '--- MinIO setup complete ---';
-      "
 
 volumes:
   postgres_data:

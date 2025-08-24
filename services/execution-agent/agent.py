@@ -2,11 +2,11 @@ from dotenv import load_dotenv
 import pika
 import os
 from minio import Minio
+from minio.error import S3Error
 import time
 import json
 import psycopg2
 from playwright.sync_api import sync_playwright, expect, Error as PlaywrightError
-from PIL import Image, ImageChops
 import io
 import re
 
@@ -44,10 +44,6 @@ try:
         secure=False,
     )
     print("Execution Agent: Successfully initialized MinIO client.")
-    found = minio_client.bucket_exists(ARTIFACTS_BUCKET_NAME)
-    if not found:
-        minio_client.make_bucket(ARTIFACTS_BUCKET_NAME)
-        print(f"Execution Agent: Created MinIO bucket '{ARTIFACTS_BUCKET_NAME}'.")
 except Exception as e:
     print(f"Execution Agent: CRITICAL - Failed to initialize MinIO client: {e}")
     minio_client = None
@@ -60,11 +56,9 @@ def update_result_in_db(
     failure_reason: str = None,
     artifacts_path: str = None,
 ):
-    """Connects to PostgreSQL and UPDATES a test result with the final details."""
     if not db_run_id:
         print("  [DB] Error: No db_run_id provided. Cannot update final result.")
         return
-
     conn = None
     try:
         conn = psycopg2.connect(
@@ -90,44 +84,57 @@ def update_result_in_db(
 def handle_visual_test(page, test_case_id: str, step_name: str, artifacts_path: str):
     if not minio_client:
         return "N/A", "MinIO client not configured."
-    screenshot_bytes = page.screenshot()
+
     baseline_object_name = f"baselines/{test_case_id}/{step_name}.png"
+
     try:
+        # Check if a baseline exists in MinIO
         minio_client.stat_object(ARTIFACTS_BUCKET_NAME, baseline_object_name)
+
+        # If it exists, download it and perform the comparison
+        print("  [VISUAL] Baseline found. Comparing against current page...")
         baseline_response = minio_client.get_object(
             ARTIFACTS_BUCKET_NAME, baseline_object_name
         )
         baseline_bytes = baseline_response.read()
-        img1 = Image.open(io.BytesIO(baseline_bytes)).convert("RGB")
-        img2 = Image.open(io.BytesIO(screenshot_bytes)).convert("RGB")
-        if (
-            img1.size != img2.size
-            or ImageChops.difference(img1, img2).getbbox() is not None
-        ):
-            print("[VISUAL] FAIL: Images do not match baseline.")
-            failure_image_name = f"{artifacts_path}/visual_failure.png"
-            minio_client.put_object(
-                ARTIFACTS_BUCKET_NAME,
-                failure_image_name,
-                io.BytesIO(screenshot_bytes),
-                len(screenshot_bytes),
-                "image/png",
-            )
-            print(f"  [MinIO] Uploaded visual failure image to {failure_image_name}")
-            return "FAIL", "Visuals do not match baseline."
-        else:
-            print("  [VISUAL] PASS: Images match baseline.")
-            return "PASS", "Images match baseline."
-    except Exception:
-        print("  [VISUAL] No baseline found. Creating new one.")
+
+        expect(page).to_have_screenshot(baseline_bytes, threshold=0.2)
+        print("  [VISUAL] PASS: Images match baseline.")
+        return "PASS", "Images match baseline."
+
+    except PlaywrightError as e:
+        print(f"[VISUAL] FAIL: {e}")
+
+        failure_image_name = f"{artifacts_path}/visual_failure.png"
+        failure_screenshot_bytes = page.screenshot()
         minio_client.put_object(
             ARTIFACTS_BUCKET_NAME,
-            baseline_object_name,
-            io.BytesIO(screenshot_bytes),
-            len(screenshot_bytes),
+            failure_image_name,
+            io.BytesIO(failure_screenshot_bytes),
+            len(failure_screenshot_bytes),
             "image/png",
         )
-        return "BASELINE_CREATED", f"New baseline created: {baseline_object_name}"
+        print(f"  [MinIO] Uploaded visual failure image to {failure_image_name}")
+        return "FAIL", "Visuals do not match baseline."
+
+    except S3Error as exc:
+        # This block *specifically* catches MinIO/S3 errors
+        if exc.code == "NoSuchKey":
+            # This is the ONLY case where we should create a new baseline
+            print("  [VISUAL] No baseline found. Creating new one.")
+            new_baseline_bytes = page.screenshot()
+            minio_client.put_object(
+                ARTIFACTS_BUCKET_NAME,
+                baseline_object_name,
+                io.BytesIO(new_baseline_bytes),
+                len(new_baseline_bytes),
+                "image/png",
+            )
+            return "BASELINE_CREATED", f"New baseline created: {baseline_object_name}"
+        else:
+            # Any other S3 error (like AccessDenied, ConnectionRefused) is a hard failure
+            print(f"[VISUAL] S3 ERROR: Could not check for baseline. {exc}")
+            return "N/A", f"S3 Error: {exc.code}"
 
 
 def find_element_locator(page, target_name: str, ui_blueprint: list):
@@ -203,6 +210,8 @@ def run_test_case(test_case_json: dict):
                 context.tracing.start(screenshots=True, snapshots=True, sources=True)
                 page = context.new_page()
 
+                page.set_viewport_size({"width": 1920, "height": 1080})
+
                 page.goto(target_url, timeout=60000)
 
                 for step in test_case_json.get("steps", []):
@@ -239,11 +248,17 @@ def run_test_case(test_case_json: dict):
                     page, run_id, "final_page_view", artifacts_path
                 )
 
-                print("\nAll test steps completed successfully.")
-                status = "PASS"
+                if visual_status in ["PASS", "BASELINE_CREATED"]:
+                    status = "PASS"
+                else:
+                    status = "FAIL"
+                    failure_reason = (
+                        "Visual test failed. Screenshot did not match the baseline."
+                    )
 
             except Exception as e:
                 print(f"[FAIL] Test run finished with an error: {e}")
+                status = "FAIL"
                 failure_reason = re.sub(r"\s+", " ", str(e).splitlines()[0])
 
                 if "page" in locals() and page and minio_client:
