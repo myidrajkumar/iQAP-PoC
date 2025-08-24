@@ -2,7 +2,7 @@
 
 import json
 import logging
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Body
 from schemas.test_case import GenerationRequest, GenerationResponse
 from services import ai_service, discovery_service, messaging_service
 
@@ -16,13 +16,15 @@ def read_root():
     return {"message": "iQAP AI Orchestrator is running."}
 
 
-@router.post("/generate-test-case", response_model=GenerationResponse)
+# --- MODIFIED ENDPOINT ---
+# It now returns the full test case JSON instead of just a message.
+@router.post("/generate-test-case", response_model=dict)
 async def generate_test_case(request: GenerationRequest):
     """
-    Main endpoint to generate a test case.
-    Orchestrates calls to the discovery service, AI service, and messaging service.
+    Generates a test case and returns it for user review.
+    Orchestrates calls to the discovery service and AI service.
     """
-    logger.info("Received request for URL: %s", request.target_url)
+    logger.info("Received request to GENERATE test for URL: %s", request.target_url)
 
     try:
         # 1. Get UI blueprint from the discovery service
@@ -40,13 +42,13 @@ async def generate_test_case(request: GenerationRequest):
         generated_test_case["ui_blueprint"] = ui_blueprint_json.get("elements", [])
         generated_test_case["target_url"] = request.target_url
 
-        # 4. Publish the job to RabbitMQ
-        messaging_service.publish_to_rabbitmq(generated_test_case)
-
-        return GenerationResponse(
-            message="Test Case Generation Job Published!",
-            test_case_id=generated_test_case.get("test_case_id"),
+        # 4. Return the generated test case to the frontend for review
+        # The publishing step is now handled by a separate endpoint.
+        logger.info(
+            "Successfully generated test case. Returning to frontend for review."
         )
+        return generated_test_case
+
     except HTTPException as e:
         # Re-raise HTTP exceptions to let FastAPI handle them
         raise e
@@ -55,3 +57,26 @@ async def generate_test_case(request: GenerationRequest):
         raise HTTPException(
             status_code=500, detail=f"An unexpected error occurred: {e}"
         )
+
+
+# --- NEW ENDPOINT ---
+# This endpoint receives the final (potentially user-approved) test case and publishes it.
+@router.post("/publish-test-case", response_model=GenerationResponse)
+async def publish_test_case(test_case: dict = Body(...)):
+    """
+    Receives a test case JSON and publishes it to the execution queue.
+    """
+    logger.info(
+        "Received request to PUBLISH test case ID: %s", test_case.get("test_case_id")
+    )
+    try:
+        messaging_service.publish_to_rabbitmq(test_case)
+        return GenerationResponse(
+            message="Test Case Execution Job Published!",
+            test_case_id=test_case.get("test_case_id"),
+        )
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.error(f"Failed to publish test case to RabbitMQ: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to publish job.")

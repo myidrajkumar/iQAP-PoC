@@ -6,9 +6,11 @@ const orchestratorApiUrl = process.env.REACT_APP_API_URL || 'http://localhost:80
 
 export const useTestApi = () => {
   const [results, setResults] = useState([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(false); // For generation
+  const [isExecuting, setIsExecuting] = useState(false); // For execution
   const [error, setError] = useState('');
   const [statusMessage, setStatusMessage] = useState('');
+  const [testCase, setTestCase] = useState(null); // <-- Holds the generated test case JSON
 
   const fetchResults = useCallback(async () => {
     try {
@@ -27,16 +29,17 @@ export const useTestApi = () => {
   const generateTest = async (requirement, targetUrl) => {
     setIsLoading(true);
     setError('');
+    setTestCase(null);
     setStatusMessage('Generating test case via Gemini...');
     try {
       const response = await axios.post(`${orchestratorApiUrl}/api/v1/generate-test-case`, {
         requirement: requirement,
         target_url: targetUrl,
       });
-      setStatusMessage(response.data.message || "Job published successfully!");
-      setTimeout(fetchResults, 5000); // Poll for results after a delay
+      setTestCase(response.data); // <-- Store the returned JSON
+      setStatusMessage('');
     } catch (err) {
-      const errorMessage = err.response?.data?.detail || "Failed to publish job.";
+      const errorMessage = err.response?.data?.detail || "Failed to generate test case.";
       setError(`Error: ${errorMessage}`);
       setStatusMessage('');
     } finally {
@@ -44,5 +47,24 @@ export const useTestApi = () => {
     }
   };
 
-  return { results, isLoading, error, statusMessage, fetchResults, generateTest };
+  const runTest = async (testCaseToRun) => {
+    setIsExecuting(true);
+    setError('');
+    setStatusMessage('Publishing job for execution...');
+    try {
+      const response = await axios.post(`${orchestratorApiUrl}/api/v1/publish-test-case`, testCaseToRun);
+      setStatusMessage(response.data.message || "Job published successfully!");
+      setTestCase(null); // <-- Return to the main form screen
+      setTimeout(fetchResults, 5000); // Poll for results after a delay
+    } catch (err) {
+        const errorMessage = err.response?.data?.detail || "Failed to publish job.";
+        setError(`Error: ${errorMessage}`);
+        setStatusMessage('');
+    } finally {
+        setIsExecuting(false);
+    }
+  };
+
+
+  return { results, isLoading, isExecuting, error, statusMessage, testCase, fetchResults, generateTest, runTest, setTestCase };
 };

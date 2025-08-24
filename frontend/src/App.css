@@ -105,3 +105,84 @@ th { background-color: #eef1f4; position: sticky; top: 0; z-index: 1; }
 }
 .status { color: #004085; background-color: #cce5ff; border: 1px solid #b8daff; }
 .error { color: #721c24; background-color: #f8d7da; border: 1px solid #f5c6cb; }
+
+.test-case-viewer {
+  display: flex;
+  flex-direction: column;
+}
+
+.viewer-header {
+  margin-bottom: 1.5rem;
+}
+
+.viewer-header h3 {
+  margin-top: 0;
+  margin-bottom: 0.5rem;
+  color: #1a2a4d;
+}
+
+.viewer-header p {
+  margin: 0;
+  font-style: italic;
+  color: #555;
+  border-left: 3px solid #007bff;
+  padding-left: 10px;
+}
+
+.steps-container {
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.step-card {
+  display: grid;
+  grid-template-columns: 30px 1fr;
+  gap: 1rem;
+  padding: 12px;
+  align-items: center;
+  border-bottom: 1px solid #eee;
+}
+
+.step-card:last-child {
+  border-bottom: none;
+}
+
+.step-number {
+  font-weight: bold;
+  font-size: 1.2rem;
+  color: #007bff;
+  text-align: center;
+}
+
+.step-details p {
+  margin: 0;
+  line-height: 1.4;
+}
+
+.step-details .action {
+  font-weight: 600;
+  color: #333;
+}
+
+.step-details .target {
+  font-family: 'Courier New', Courier, monospace;
+  background-color: #eef1f4;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 0.9rem;
+}
+
+.viewer-actions {
+  display: flex;
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+
+.viewer-actions .secondary-btn {
+  background-color: #6c757d;
+}
+.viewer-actions .secondary-btn:hover {
+  background-color: #5a6268;
+}
