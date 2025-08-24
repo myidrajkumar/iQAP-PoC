@@ -73,24 +73,62 @@ class AIService:
     def _build_prompt(self, requirement: str, ui_blueprint: str) -> str:
         """Constructs the prompt to be sent to the Gemini model."""
         return f"""
-        You are a JSON generation machine. Your sole purpose is to convert a user's requirement into a structured JSON test case.
+        You are a highly precise JSON generation machine. Your only function is to convert a user's requirement and a UI blueprint into a structured JSON test case.
 
-        RULES:
-        1. Base the test steps EXCLUSIVELY on the provided "Business Requirement".
-        2. Use the "UI Blueprint" to find the correct "logical_name" for each element.
-        3. You MUST use the key "action" for the action type. The allowed values for "action" are ONLY: "ENTER_TEXT", "CLICK", "VERIFY_ELEMENT_VISIBLE".
-        4. The keys in the "data" object inside "parameters" MUST EXACTLY MATCH the "logical_name" you use in the "steps".
-        5. A "CLICK" that navigates MUST have a "verifications" block.
-        6. You MUST return ONLY the raw JSON object and absolutely no other text or markdown.
+        **CRITICAL RULES:**
+        1.  **Mandatory Keys:** The final JSON object MUST contain these exact top-level keys: `test_case_id`, `objective`, `parameters`, `steps`.
+        2.  **Key Naming:** Do NOT use variations like `id` or `test_id`. You MUST use `test_case_id`.
+        3.  **Content Source:** Base the test steps EXCLUSIVELY on the provided "Business Requirement".
+        4.  **Element Mapping:** Use the "UI Blueprint" to find the correct `logical_name` for each element in the `steps`. This is the most important mapping.
+        5.  **Action Types:** The value for the `action` key in each step MUST be one of these three strings ONLY: "ENTER_TEXT", "CLICK", "VERIFY_ELEMENT_VISIBLE".
+        6.  **Parameter Matching:** Any `logical_name` used in a step that requires data (like "ENTER_TEXT") MUST have a corresponding key-value pair in the `data` object inside the `parameters` array.
+        7.  **Output Format:** You MUST return ONLY the raw JSON object. Do not include any explanatory text, markdown formatting like ```json, or any other characters before or after the JSON structure.
 
         ---
-        Business Requirement:
+        **GOOD JSON EXAMPLE:**
+        {{
+            "test_case_id": "TC_LOGIN_VALID",
+            "objective": "Verify a user can log in with valid credentials.",
+            "parameters": [
+                {{
+                    "dataset_name": "valid_credentials",
+                    "data": {{
+                        "Username": "standard_user",
+                        "Password": "secret_sauce"
+                    }}
+                }}
+            ],
+            "steps": [
+                {{
+                    "step": 1,
+                    "action": "ENTER_TEXT",
+                    "target_element": "Username",
+                    "data_key": "Username"
+                }},
+                {{
+                    "step": 2,
+                    "action": "ENTER_TEXT",
+                    "target_element": "Password",
+                    "data_key": "Password"
+                }},
+                {{
+                    "step": 3,
+                    "action": "CLICK",
+                    "target_element": "Login"
+                }}
+            ]
+        }}
+        ---
+
+        **TASK:**
+
+        **Business Requirement:**
         {requirement}
-        ---
-        UI Blueprint:
-        {ui_blueprint}
-        ---
 
+        **UI Blueprint:**
+        {ui_blueprint}
+
+        ---
         Generate the JSON test case now.
         """
 
