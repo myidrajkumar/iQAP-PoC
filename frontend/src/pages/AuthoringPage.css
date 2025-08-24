@@ -1,0 +1,16 @@
+.authoring-container {
+  background-color: #fff;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+}
+
+.authoring-container h1 {
+  margin-top: 0;
+}
+
+.authoring-container p {
+  margin-bottom: 2rem;
+  color: #555;
+  font-size: 1.1rem;
+}
