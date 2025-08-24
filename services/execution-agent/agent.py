@@ -316,13 +316,10 @@ def main():
 
             channel.basic_qos(prefetch_count=1)
 
-            # --- THE FIX: Determine which queues to listen to ---
             queues_to_listen = []
             if is_docker:
-                # The Docker agent ONLY listens to the main execution queue
                 queues_to_listen.append("execution_queue")
             else:
-                # The local agent is for debugging and listens to BOTH
                 queues_to_listen.append("execution_queue")
                 queues_to_listen.append("live_view_queue")
 
