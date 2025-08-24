@@ -30,12 +30,13 @@ DB_PASS = os.getenv("POSTGRES_PASSWORD")
 # Force headless mode in Docker environment to avoid display issues
 if is_docker:
     IS_HEADLESS = True
+    MINIO_HOST = "minio:9000"
     print("Execution Agent: Running in Docker - forcing headless mode")
 else:
     IS_HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
+    MINIO_HOST = "localhost:9000"
 
 # --- MinIO Configuration ---
-MINIO_HOST = "minio:9000"
 MINIO_ACCESS_KEY = os.getenv("MINIO_ROOT_USER")
 MINIO_SECRET_KEY = os.getenv("MINIO_ROOT_PASSWORD")
 VISUAL_BUCKET_NAME = "visual-baselines"
@@ -254,6 +255,10 @@ def run_test_case(test_case_json: dict):
                     print(
                         f"  [SUCCESS] Action '{action}' on '{target_name}' successful."
                     )
+
+                print("\nWaiting for page to settle before visual test...")
+                # It waits until there are no network connections for 500ms.
+                page.wait_for_load_state("networkidle")
 
                 print("\nPerforming Visual Test...")
                 visual_status, _ = handle_visual_test(page, run_id, "final_page_view")

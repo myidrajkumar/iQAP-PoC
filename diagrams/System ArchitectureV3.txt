@@ -1,0 +1,39 @@
+graph TD
+    subgraph "External Systems"
+        CICD["CI/CD Pipeline"]
+        LLM["Google Gemini API"]
+    end
+
+    subgraph "User Interaction"
+        A["Web Frontend (UI)"]
+    end
+
+    subgraph "Core Logic"
+        B["AI Orchestrator"]
+        C["Discovery Service"]
+        D["Execution Orchestrator"]
+        E["Execution Agent"]
+        F["Reporting Service"]
+    end
+
+    subgraph "Infrastructure"
+        G["RabbitMQ"]
+        H["PostgreSQL"]
+        I["MinIO (Object Storage)"]
+    end
+    
+    A -- "User generates test" --> B
+    CICD -- "Webhook triggers test suite" --> B
+
+    B -- "Discovers UI" --> C
+    B -- "Gets intelligence from" --> LLM
+    B -- "Publishes Job" --> G
+    
+    D -- "Consumes & Dispatches Job" --> G
+    E -- "Consumes & Executes Test" --> G
+    
+    E -- "Stores/Compares visual baselines" --> I
+    E -- "Writes results" --> H
+
+    A -- "Views results" --> F
+    F -- "Reads results from" --> H

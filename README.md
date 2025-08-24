@@ -1,107 +1,219 @@
-# iQAP - Intelligent Quality Assurance Platform
+# iQAP - The Intelligent Quality Assurance Platform
 
-Welcome to iQAP. This project is now a powerful demonstration of how AI can be holistically integrated into the QA lifecycle, moving beyond simple test generation to include visual validation, intelligent self-healing, and dynamic data parameterization.
+iQAP is a self-learning, integrated platform that autonomously discovers application features, generates strategic test plans, executes them intelligently, and provides predictive insights to development teams. Its core mission is to reduce human intervention to a minimum, focusing human expertise on complex problem-solving rather than repetitive tasks.
 
-## New Features
+This repository contains the Proof of Concept (PoC) for the iQAP platform, demonstrating a full-stack, microservices-based architecture for AI-driven test automation.
 
-1.  **Google Gemini Integration:** The AI core has been upgraded from OpenAI to **Google's Gemini Pro API**, leveraging its advanced reasoning for more accurate and context-aware test case generation.
+![iQAP Demo GIF](https://your-image-hosting-service.com/iqap-demo.gif)
+*(Recommended: Replace the link above with a GIF showing the frontend in action: entering a requirement, clicking generate, and seeing the results populate)*
 
-2.  **Visual Regression Testing:** The platform can now detect visual bugs. The Execution Agent takes screenshots, compares them against approved baselines stored in **MinIO Object Storage**, and reports any visual discrepancies.
+## ✨ Core Features
 
-3.  **Enhanced Self-Healing Engine:** The self-healing logic is no longer hardcoded. When a primary UI locator fails, the agent now intelligently queries the full **UI Blueprint** (from the Discovery Service) to find the element based on other attributes, making it dramatically more resilient.
+*   **AI-Powered Test Generation**: Uses Google's Gemini Pro to convert plain English business requirements into structured, executable test cases.
+*   **Autonomous Application Discovery**: A `discovery-service` crawls a target URL to create a "UI Blueprint" of all interactive elements, providing the AI with the necessary context.
+*   **Microservices Architecture**: A fully containerized system with distinct services for the frontend, orchestration, discovery, execution, and reporting, ensuring scalability and separation of concerns.
+*   **Message-Driven Execution**: Leverages RabbitMQ as a message broker to create a resilient, asynchronous workflow for test generation and execution.
+*   **Visual Regression Testing**: The `execution-agent` takes screenshots and compares them against baselines stored in MinIO, automatically detecting visual changes.
+*   **Persistent Test Reporting**: All test run results are stored in a PostgreSQL database and can be viewed through the `reporting-service` and the frontend UI.
+*   **Developer-Friendly**: The entire stack is managed with a single `docker-compose` file for easy setup and teardown.
 
-4.  **AI-Driven Test Data Parameterization:** We have moved beyond static test data. The Gemini model now generates multiple data sets for a single test case (e.g., a valid user, a locked-out user), and the Execution Agent automatically runs the test multiple times with these different parameters.
+## 🛠️ Technology Stack
 
-5.  **CI/CD Webhook Integration:** A new API endpoint (`/webhook/run-suite`) has been added to the AI Orchestrator, allowing external systems like **Jenkins or GitHub Actions** to trigger test runs automatically, enabling true continuous testing.
+| Category           | Technology                                                                          |
+| ------------------ | ----------------------------------------------------------------------------------- |
+| **Frontend**       | React.js, Axios, JavaScript (ES6+)                                                  |
+| **Backend**        | Python, FastAPI                                                                     |
+| **AI Integration** | Google Gemini Pro (`google-generativeai`)                                           |
+| **Web Automation** | Playwright                                                                          |
+| **Infrastructure** | Docker, Docker Compose                                                              |
+| **Database**       | PostgreSQL, pgAdmin                                                                 |
+| **Message Broker** | RabbitMQ                                                                            |
+| **Object Storage** | MinIO (for visual test baselines)                                                   |
 
-## Architecture Diagram
+## 🏗️ System Architecture
 
-The architecture now incorporates MinIO for object storage and highlights the new webhook integration path.
+The iQAP platform is built on a distributed, event-driven architecture. Each service has a specific responsibility, and they communicate through REST APIs and a central message queue.
 
-![iQAP Architecture Diagram](./docs/iqap-architecture.svg)
+```mermaid
+graph TD
+    subgraph User Interaction
+        A[User @ React Frontend]
+    end
 
-## Project Structure
+    subgraph Backend Services
+        B(AI Orchestrator)
+        C(Discovery Service)
+        D(Execution Orchestrator)
+        E(Execution Agent)
+        F(Reporting Service)
+    end
 
+    subgraph Infrastructure
+        G[RabbitMQ]
+        H[PostgreSQL DB]
+        I[MinIO Storage]
+    end
 
+    A -- 1. POST /generate-test-case --> B;
+    B -- 2. POST /discover --> C;
+    C -- 3. Returns UI Blueprint --> B;
+    B -- 4. Generates Test Case via Gemini --> B;
+    B -- 5. Publishes Job --> G;
+    G -- 6. Consumes Job --> D;
+    D -- 7. Forwards Job --> G;
+    G -- 8. Consumes Job --> E;
+    E -- 9. Executes Test with Playwright --> E;
+    E -- 10. Stores Visual Baseline --> I;
+    E -- 11. Writes Results --> H;
+    A -- 12. GET /results --> F;
+    F -- 13. Reads Results --> H;
+    H -- 14. Returns Data --> F;
+    F -- 15. Returns Data --> A;
+
+    style B fill:#f9f,stroke:#333,stroke-width:2px
+    style E fill:#ccf,stroke:#333,stroke-width:2px
 ```
-iQAP/
-├── .env
-├── docker-compose.yml
-├── docs/
-│   └── iqap-architecture.svg
-├── frontend/
-│   └── ... 
-└── services/
-    ├── ai-orchestrator/
-    │   └── ... 
-    ├── discovery-service/
-    │   └── ... 
-    ├── execution-orchestrator/
-    │   └── ... 
-    ├── execution-agent/
-    │   └── ... 
-    └── reporting-service/
-        └── ... 
-```
 
-## Prerequisites
+### Service Responsibilities
 
-*   [Docker](https://www.docker.com/products/docker-desktop/) installed and running.
-*   A **Google Gemini API Key**.
+*   **`frontend`**: The React-based user interface where users can input a target URL and a business requirement to trigger a test run.
+*   **`ai-orchestrator`**: The brain of the operation. It receives user requests, calls the `discovery-service` to map the application, uses Gemini AI to generate a test script, and publishes the final job to RabbitMQ.
+*   **`discovery-service`**: A FastAPI service that uses Playwright to visit a URL and extract a JSON "blueprint" of all interactive UI elements.
+*   **`execution-orchestrator`**: A simple but crucial service that listens for newly generated test cases and forwards them to the queue for the execution agents. This decoupling allows for future features like load balancing or scheduling.
+*   **`execution-agent`**: The worker. It picks up test jobs, launches a Playwright browser, executes the steps, performs visual comparisons against baselines in MinIO, and writes the final results to the PostgreSQL database.
+*   **`reporting-service`**: A FastAPI service that provides API endpoints to query test results from the PostgreSQL database.
+*   **`postgres`**, **`rabbitmq`**, **`minio`**: The core infrastructure services providing data persistence, messaging, and object storage.
 
-## Setup & Running Instructions
+## 🚀 Getting Started
 
-### Step 1: Update the `.env` Configuration File
-Place your Google API key and credentials for MinIO service.
+Follow these instructions to get the entire iQAP platform running on your local machine.
 
-```ini
-# PostgreSQL Configuration
-POSTGRES_DB=iqap_db
-POSTGRES_USER=iqap_user
-POSTGRES_PASSWORD=iqap_password
+### Prerequisites
 
-# RabbitMQ Configuration
-RABBITMQ_DEFAULT_USER=rabbit_user
-RABBITMQ_DEFAULT_PASS=rabbit_password
+*   **Docker and Docker Compose**: Ensure they are installed and running on your system. [Install Docker](https://docs.docker.com/get-docker/).
+*   **Google Gemini API Key**: You need an API key from Google AI Studio. [Get API Key](https://aistudio.google.com/app/apikey).
 
-# Google Gemini API Key - REPLACE WITH YOUR KEY
-GOOGLE_API_KEY="google_api_key_here"
-
-# MinIO Object Storage Configuration
-MINIO_ROOT_USER=minioadmin
-MINIO_ROOT_PASSWORD=minioadmin
-```
-
-### Step 2: Build and Run the Platform
-Open a terminal in the root `iQAP/` directory and run the following command to build all services.
+### 1. Clone the Repository
 
 ```bash
-docker-compose up --build -d
+git clone <your-repository-url>
+cd <your-repository-folder>
 ```
 
-### Step 3: Create the MinIO Bucket
-After the services start, create a "bucket" in MinIO to store the visual regression screenshots.
+### 2. Create the Environment File
 
-*   Open your browser to the MinIO console: **`http://localhost:9001`**
-*   Login with the credentials from `.env` file (`minioadmin` / `minioadmin`).
-*   Click the "Create Bucket" button.
-*   Name the bucket **`visual-baselines`** and click "Create Bucket".
+Create a file named `.env` in the root of the project directory. It's recommended to copy the contents of `.env.example` (if provided) or use the template below and fill in the required values.
 
-## How to Use the iQAP Platform
+#### `.env` Template
 
-*   **Generate a Test:** Go to **`http://localhost:3000`**. Use the UI to generate a test for `https://www.saucedemo.com`.
-*   **Observe the Flow:** The test will run in the background. Check the `docker-compose logs -f execution-agent` to see its progress. The first time it runs, it will save a "baseline" screenshot.
-*   **View Results:** Click "Refresh Results" on the UI to see the outcome saved in the database.
+```ini
+# --- Gemini AI Configuration ---
+# Get your API key from https://aistudio.google.com/app/apikey
+GOOGLE_API_KEY="YOUR_GEMINI_API_KEY"
+GEMINI_MODEL_NAME="gemini-1.5-flash-latest"
+GEMINI_TEMPERATURE=0.0
 
-## (Future Roadmap)
+# --- PostgreSQL Configuration ---
+POSTGRES_DB=iqap_db
+POSTGRES_USER=iqap_user
+POSTGRES_PASSWORD=a_very_secret_password
+POSTGRES_HOST=localhost # Used for local scripts, overridden by docker-compose
+POSTGRES_PORT=5432
 
-1.  **Cloud-Based Cross-Browser Execution:** Integration with a cloud grid provider (like BrowserStack or Sauce Labs) to run tests across dozens of real browsers and devices in parallel.
-2.  **AI-Powered Exploratory Testing:** "explore" mode where the AI is given a URL and autonomously navigates the application, trying to find crashes and bugs without a pre-written script.
-3.  **API Test Generation:** Extending the Discovery Service to ingest OpenAPI/Swagger specifications and have Gemini automatically generate a full suite of API contract and integration tests.
-4.  **User Session Recording to Test Script:** Building a browser extension to record a manual testing session (clicks, typing) and have the AI automatically convert it into a robust, repeatable iQAP test script.
-5.  **Jira & Slack Integration:** Automatically creating detailed Jira tickets for test failures (with videos/screenshots attached) and post notifications to a MSTeams channel.
-6.  **Performance Baseline Testing:** Enhancing the Execution Agent to capture key performance metrics (like Page Load Time, Largest Contentful Paint) and automatically fail a test if it regresses beyond a set threshold.
-7.  **AI-Powered Test Suite Optimization:** Building a module that analyzes test results over time and uses AI to identify redundant or low-value tests that can be safely removed, keeping the suite fast and efficient.
-8.  **Predictive Defect Analysis:** Using machine learning to analyze code commit history and past test failures to create a "heat map" that predicts which parts of the application are most likely to have bugs in the future.
-9.  **Automated Accessibility (a11y) Auditing:** Integrating tools like Axe-Core into the Execution Agent to automatically scan for and report on WCAG accessibility violations.
-10. **Enhanced Reporting and Analytics:** Building a more advanced dashboard in the frontend with trend charts, failure rate analysis, and visual test "diff" viewers.
+# --- RabbitMQ Configuration ---
+RABBITMQ_DEFAULT_USER=rabbit_user
+RABBITMQ_DEFAULT_PASS=rabbit_password
+RABBITMQ_HOST=localhost # Used for local scripts, overridden by docker-compose
+
+# --- MinIO Object Storage Configuration ---
+MINIO_ROOT_USER=minioadmin
+MINIO_ROOT_PASSWORD=minioadmin
+
+# --- Execution Agent Configuration (for local debugging) ---
+# Set to "false" to run the agent locally with a visible browser
+HEADLESS=true
+```
+
+### 3. Build and Run the Stack
+
+From the root directory, run the following command. This will pull the necessary images, build your custom service images, and start all containers.
+
+```bash
+docker-compose up --build
+```
+
+The initial build may take a few minutes. Once it's complete, the services will be available at the following URLs:
+
+*   **iQAP Frontend**: [http://localhost:3000](http://localhost:3000)
+*   **RabbitMQ Management**: [http://localhost:15672](http://localhost:15672) (Login with user/pass from your `.env` file)
+*   **MinIO Console**: [http://localhost:9001](http://localhost:9001) (Login with user/pass from your `.env` file)
+*   **pgAdmin 4**: [http://localhost:8900](http://localhost:8900) (Login with email/pass from `docker-compose.yml`)
+
+## 💡 How to Use
+
+1.  Navigate to the **iQAP Frontend** at `http://localhost:3000`.
+2.  The form will be pre-populated with a sample URL (`https://www.saucedemo.com`) and a business requirement.
+3.  Click the **"Generate & Run Test"** button.
+4.  Observe the status message below the button as the system works.
+5.  After a short while, the **Test Run History** on the right will update with the results of your test. The first run for a test case will have a `BASELINE_CREATED` visual status. Subsequent runs will show `PASS` or `FAIL`.
+
+---
+
+## 🖥️ Debugging with Headful (UI) Mode
+
+Your current configuration is perfectly set up for running headless tests *within Docker*, which is the best practice for CI/CD and automated environments. The line `IS_HEADLESS = True` when `is_docker` is detected in `agent.py` is correct because you cannot easily render a UI from a standard container.
+
+However, for local development and debugging, you might want to see the browser in action. To do this, you can run the `execution-agent` script directly on your host machine while the rest of the stack remains in Docker.
+
+**Here is the recommended workflow:**
+
+1.  **Start Only the Infrastructure:**
+    First, start only the necessary background services using Docker Compose.
+    ```bash
+    docker-compose up -d postgres rabbitmq minio
+    ```
+
+2.  **Stop the Dockerized Agent (if running):**
+    If the full stack is already running, you need to stop the agent container so it doesn't compete for jobs.
+    ```bash
+    docker-compose stop execution-agent
+    ```
+
+3.  **Set Up a Local Environment for the Agent:**
+    Open a new terminal window and navigate to the agent's directory.
+    ```bash
+    cd services/execution-agent
+    ```
+    Create a virtual environment and install the dependencies.
+    ```bash
+    # Create virtual environment
+    python -m venv venv
+
+    # Activate it (Windows)
+    .\venv\Scripts\activate
+
+    # Activate it (macOS/Linux)
+    source venv/bin/activate
+
+    # Install dependencies
+    pip install -r requirements.txt
+    ```
+
+4.  **Install Playwright Browsers:**
+    This only needs to be done once.
+    ```bash
+    playwright install
+    ```
+
+5.  **Run the Agent in Headful Mode:**
+    In your `.env` file (in the project root), change the `HEADLESS` variable:
+    ```ini
+    # .env file
+    HEADLESS=false
+    ```
+    Now, run the agent script from your terminal. It will pick up the environment variables from the `.env` file and connect to the Dockerized infrastructure.
+    ```bash
+    python agent.py
+    ```
+
+You will now see the agent connect to RabbitMQ. When you trigger a test from the frontend, a Chrome browser window will appear on your screen and you can watch the test execute in real-time.
