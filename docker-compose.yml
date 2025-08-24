@@ -53,7 +53,6 @@ services:
       - rabbitmq
 
   execution-agent:
-    container_name: execution-agent
     build: ./services/execution-agent
     volumes:
       - ./services/execution-agent:/app
@@ -121,7 +120,7 @@ services:
     env_file: .env
     command: server /data --console-address ":9001"
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/minio/health/live"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -135,12 +134,15 @@ services:
     entrypoint: >
       /bin/sh -c "
       set -e;
-      echo '--- Configuring MinIO ---';
-      mc config host add local http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD;
-      echo 'Host configured.';
-      mc mb local/test-artifacts --ignore-existing;
+      echo '--- Waiting for MinIO to be ready...';
+      until mc alias set myminio http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD}; do
+        echo '... MinIO not ready, waiting 5 seconds';
+        sleep 5;
+      done;
+      echo 'Host configured successfully.';
+      mc mb myminio/test-artifacts --ignore-existing;
       echo 'Bucket created or already exists.';
-      mc policy set download local/test-artifacts;
+      mc anonymous set download myminio/test-artifacts;
       echo 'Bucket policy set to public download.';
       echo '--- MinIO setup complete ---';
       "
