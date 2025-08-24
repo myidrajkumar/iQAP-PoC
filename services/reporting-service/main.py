@@ -6,6 +6,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
+from collections import defaultdict
+from datetime import date, timedelta
 
 load_dotenv()
 
@@ -161,6 +163,97 @@ def get_run_details(run_id: int):
                 status_code=500, detail="Failed to fetch test run details."
             )
         raise e
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def process_daily_summary(rows, days):
+    # Create a dictionary to hold results for each day in the range
+    today = date.today()
+    date_range = [today - timedelta(days=i) for i in range(days - 1, -1, -1)]
+
+    # Use defaultdict to easily handle days with no test runs
+    summary = {dt.strftime("%Y-%m-%d"): {"pass": 0, "fail": 0} for dt in date_range}
+
+    for row in rows:
+        day_str = row["day"].strftime("%Y-%m-%d")
+        if day_str in summary:
+            if row["status"] == "PASS":
+                summary[day_str]["pass"] = row["count"]
+            elif row["status"] == "FAIL":
+                summary[day_str]["fail"] = row["count"]
+
+    # Convert the dictionary to the list format the frontend expects
+    return [{"date": day, **counts} for day, counts in summary.items()]
+
+
+# --- NEW ENDPOINT: /stats/kpis ---
+@app.get("/stats/kpis")
+def get_kpis(days: int = 7):
+    """Calculates and returns key performance indicators for a given period."""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # SQL query to get total runs and passed runs in one go
+        query = """
+            SELECT
+                COUNT(*) AS total_runs,
+                COUNT(*) FILTER (WHERE status = 'PASS') AS passed_runs
+            FROM test_results
+            WHERE timestamp >= NOW() - INTERVAL '%s days';
+        """
+        cursor.execute(query, (days,))
+        data = cursor.fetchone()
+
+        total_runs = data["total_runs"] or 0
+        passed_runs = data["passed_runs"] or 0
+
+        pass_rate = (passed_runs / total_runs * 100) if total_runs > 0 else 0
+
+        return {"total_runs": total_runs, "pass_rate": round(pass_rate, 1)}
+
+    except Exception as e:
+        print(f"ERROR fetching KPIs: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch KPIs.")
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+# --- NEW ENDPOINT: /stats/daily_summary ---
+@app.get("/stats/daily_summary")
+def get_daily_summary(days: int = 7):
+    """Returns a daily breakdown of pass/fail counts for a given period."""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # SQL query to group by date and status
+        query = """
+            SELECT
+                DATE(timestamp) AS day,
+                status,
+                COUNT(*) AS count
+            FROM test_results
+            WHERE timestamp >= NOW() - INTERVAL '%s days'
+            AND status IN ('PASS', 'FAIL')
+            GROUP BY DATE(timestamp), status
+            ORDER BY day;
+        """
+        cursor.execute(query, (days,))
+        rows = cursor.fetchall()
+
+        # Use the helper to format the data perfectly for the chart
+        summary = process_daily_summary(rows, days)
+        return summary
+
+    except Exception as e:
+        print(f"ERROR fetching daily summary: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch daily summary.")
     finally:
         if conn is not None:
             conn.close()
