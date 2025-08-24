@@ -1,9 +1,9 @@
 import React from 'react';
-import { useTestApi } from '../hooks/useTestApi'; // We can reuse the same hook for now
+import { useTestRun } from '../context/TestRunContext'; // <-- Use the new context hook
 import ResultsTable from '../components/ResultsTable';
 
 function TestRunsPage() {
-    const { results, fetchResults } = useTestApi();
+    const { results, fetchResults } = useTestRun(); // <-- Use the new context hook
 
     return (
         <div>

@@ -130,18 +130,19 @@ services:
     image: minio/mc
     depends_on:
       minio:
-        condition: service_healthy # Waits for the healthcheck above to pass
+        condition: service_healthy
     env_file: .env
     entrypoint: >
       /bin/sh -c "
-      echo 'Waiting for MinIO...' &&
-      mc alias set local http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD &&
-      echo 'MinIO alias configured.' &&
-      mc mb local/test-artifacts --ignore-existing &&
-      echo 'Bucket created or already exists.' &&
-      mc anonymous set download local/test-artifacts &&
-      echo 'Bucket policy set to public download.' &&
-      echo 'MinIO setup complete.'
+      set -e;
+      echo '--- Configuring MinIO ---';
+      mc config host add local http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD;
+      echo 'Host configured.';
+      mc mb local/test-artifacts --ignore-existing;
+      echo 'Bucket created or already exists.';
+      mc policy set download local/test-artifacts;
+      echo 'Bucket policy set to public download.';
+      echo '--- MinIO setup complete ---';
       "
 
 volumes:

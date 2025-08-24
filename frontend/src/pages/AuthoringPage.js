@@ -1,12 +1,10 @@
 import React from 'react';
-import { useNavigate } from 'react-router-dom';
-import { useTestApi } from '../hooks/useTestApi';
+import { useTestRun } from '../context/TestRunContext'; // <-- Use the new context hook
 import TestForm from '../components/TestForm';
 import TestCaseEditor from '../components/TestCaseEditor';
 import './AuthoringPage.css';
 
 function AuthoringPage() {
-  const navigate = useNavigate();
   const {
     isLoading,
     isExecuting,
@@ -16,15 +14,10 @@ function AuthoringPage() {
     generateTest,
     runTest,
     setTestCase,
-  } = useTestApi();
-
-  const handleRunTest = (testCaseToRun, isLiveView = false) => {
-      runTest(testCaseToRun, navigate, isLiveView);
-  };
+  } = useTestRun(); // <-- Use the new context hook
 
   return (
     <div className="authoring-container">
-      {/* --- THE FIX: Updated Titles --- */}
       <h1>Test Studio</h1>
       <p>Design, generate, and edit your automated tests in one place.</p>
       
@@ -33,7 +26,7 @@ function AuthoringPage() {
           <TestCaseEditor
             testCase={testCase}
             isExecuting={isExecuting}
-            onRunTest={handleRunTest}
+            onRunTest={runTest} // Pass runTest directly
             onGoBack={() => setTestCase(null)}
           />
         ) : (
