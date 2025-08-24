@@ -4,9 +4,8 @@ import axios from 'axios';
 const reportingApiUrl = process.env.REACT_APP_REPORTING_URL || 'http://localhost:8002';
 const orchestratorApiUrl = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
-// Polling configuration
-const POLLING_INTERVAL = 4000; // Check every 4 seconds
-const POLLING_ATTEMPTS = 15;   // Stop after 15 attempts (1 minute)
+const POLLING_INTERVAL = 3000;
+const POLLING_ATTEMPTS = 20;
 
 export const useTestApi = () => {
   const [results, setResults] = useState([]);
@@ -16,14 +15,13 @@ export const useTestApi = () => {
   const [statusMessage, setStatusMessage] = useState('');
   const [testCase, setTestCase] = useState(null);
 
-  // Use a ref to hold the polling interval ID so it persists across re-renders
   const pollingRef = useRef(null);
 
   const fetchResults = useCallback(async () => {
     try {
       const response = await axios.get(`${reportingApiUrl}/results`);
       setResults(response.data);
-      return response.data; // Return data for polling logic
+      return response.data;
     } catch (err) {
       console.error("Failed to fetch results", err);
       setError("Could not load test results. Is the reporting service running?");
@@ -31,55 +29,60 @@ export const useTestApi = () => {
     }
   }, []);
 
-  // Stop polling when the component unmounts to prevent memory leaks
+  const startPolling = useCallback(() => {
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+    }
+
+    let attempts = 0;
+    pollingRef.current = setInterval(async () => {
+      console.log(`Polling for results... Attempt ${attempts + 1}`);
+      const currentResults = await fetchResults();
+      attempts++;
+
+      const isStillRunning = currentResults?.some(r => r.status === 'RUNNING');
+
+      if (!isStillRunning || attempts >= POLLING_ATTEMPTS) {
+        clearInterval(pollingRef.current);
+        console.log("Polling stopped.");
+      }
+    }, POLLING_INTERVAL);
+  }, [fetchResults]);
+
+  // --- THE FIX: This effect now checks sessionStorage on mount ---
   useEffect(() => {
+    fetchResults(); // Initial fetch
+
+    // Check if we were redirected here with instructions to start polling
+    if (sessionStorage.getItem('startPollingAfterRedirect') === 'true') {
+      sessionStorage.removeItem('startPollingAfterRedirect');
+      startPolling();
+    }
+    
+    // Cleanup polling on unmount
     return () => {
       if (pollingRef.current) {
         clearInterval(pollingRef.current);
       }
     };
-  }, []);
+  }, [fetchResults, startPolling]);
 
-  useEffect(() => {
-    fetchResults();
-  }, [fetchResults]);
 
-  const runTest = async (testCaseToRun) => {
-    // Stop any previous polling before starting a new one
-    if (pollingRef.current) {
-      clearInterval(pollingRef.current);
-    }
-      
+  const runTest = async (testCaseToRun, navigate, isLiveView = false) => {
     setIsExecuting(true);
     setError('');
     setStatusMessage('Publishing job for execution...');
 
     try {
-      const initialResultsCount = results.length;
-      const response = await axios.post(`${orchestratorApiUrl}/api/v1/publish-test-case`, testCaseToRun);
+      const payload = { ...testCaseToRun, is_live_view: isLiveView };
+      await axios.post(`${orchestratorApiUrl}/api/v1/publish-test-case`, payload);
       
-      setStatusMessage('Job published! Waiting for results...');
+      setStatusMessage('Job published successfully!');
       setTestCase(null);
-
-      // --- NEW POLLING LOGIC ---
-      let attempts = 0;
-      pollingRef.current = setInterval(async () => {
-        console.log(`Polling for results... Attempt ${attempts + 1}/${POLLING_ATTEMPTS}`);
-        const currentResults = await fetchResults();
-        attempts++;
-
-        // Stop polling if we find a new result or we run out of attempts
-        if ((currentResults && currentResults.length > initialResultsCount) || attempts >= POLLING_ATTEMPTS) {
-          clearInterval(pollingRef.current);
-          console.log("Polling stopped.");
-          if (currentResults && currentResults.length > initialResultsCount) {
-              setStatusMessage('New result received!');
-              setTimeout(() => setStatusMessage(''), 3000); // Clear message after 3s
-          } else {
-              setStatusMessage('Polling timed out. Please refresh manually.');
-          }
-        }
-      }, POLLING_INTERVAL);
+      
+      // --- THE FIX: Set a flag in sessionStorage before navigating ---
+      sessionStorage.setItem('startPollingAfterRedirect', 'true');
+      navigate('/runs');
       
     } catch (err) {
         const errorMessage = err.response?.data?.detail || "Failed to publish job.";

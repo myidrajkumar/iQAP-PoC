@@ -19,10 +19,16 @@ const ResultsTable = ({ results, onRefresh }) => (
         </thead>
         <tbody>
           {results.length > 0 ? results.map((result) => (
-            <tr key={result.id}>
+            <tr key={result.id} className={result.status === 'RUNNING' ? 'row-running' : ''}>
               <td>{result.id}</td>
               <td>{result.objective}</td>
-              <td><span className={`status-badge status-${result.status?.toLowerCase()}`}>{result.status}</span></td>
+              <td>
+                {result.status === 'RUNNING' ? (
+                    <span className="status-badge status-running">RUNNING</span>
+                ) : (
+                    <span className={`status-badge status-${result.status?.toLowerCase()}`}>{result.status}</span>
+                )}
+              </td>
               <td><span className={`status-badge status-${result.visual_status?.toLowerCase()?.replace(/_/g, '-').replace('/', '-') || 'n-a'}`}>{result.visual_status || 'N/A'}</span></td>
               <td>{new Date(result.timestamp).toLocaleString()}</td>
               <td>

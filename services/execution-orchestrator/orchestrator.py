@@ -3,16 +3,63 @@ import pika
 import os
 import time
 import json
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 load_dotenv()
 
+is_docker = os.environ.get("DOCKER_ENV") == "true"
+if is_docker:
+    DB_HOST = "iqap-postgres"
+else:
+    DB_HOST = os.getenv("POSTGRES_HOST", "localhost")
+DB_NAME = os.getenv("POSTGRES_DB")
+DB_USER = os.getenv("POSTGRES_USER")
+DB_PASS = os.getenv("POSTGRES_PASSWORD")
+
+
+def create_initial_record(test_case: dict):
+    """Creates a placeholder record in the DB and returns the new ID."""
+    conn = None
+    new_run_id = None
+    try:
+        conn = psycopg2.connect(
+            dbname=DB_NAME, user=DB_USER, password=DB_PASS, host=DB_HOST
+        )
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        objective = test_case.get("objective", "No objective provided")
+        if test_case.get("parameters"):
+            dataset_name = test_case["parameters"][0].get("dataset_name", "default")
+            objective += f" ({dataset_name})"
+
+        test_case_id = test_case.get("test_case_id", "N/A")
+
+        sql = """
+            INSERT INTO test_results (objective, test_case_id, status, timestamp)
+            VALUES (%s, %s, 'RUNNING', NOW())
+            RETURNING id;
+        """
+        cursor.execute(sql, (objective, test_case_id))
+        result = cursor.fetchone()
+        if result:
+            new_run_id = result["id"]
+            print(f"  [DB] Created initial record with ID: {new_run_id}")
+
+        conn.commit()
+        cursor.close()
+    except (Exception, psycopg2.DatabaseError) as error:
+        print(f"  [DB] Orchestrator Error: Could not create initial record: {error}")
+    finally:
+        if conn is not None:
+            conn.close()
+    return new_run_id
+
 
 def main():
-    # --- RabbitMQ Configuration ---
-    is_docker = os.environ.get("DOCKER_ENV") == "true"
-
-    if is_docker:
-        RABBITMQ_HOST = "iqap-rabbitmq"  # Docker service name for RabbitMQ
+    is_docker_check = os.environ.get("DOCKER_ENV") == "true"
+    if is_docker_check:
+        RABBITMQ_HOST = "iqap-rabbitmq"
     else:
         RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "localhost")
 
@@ -20,23 +67,17 @@ def main():
     RABBITMQ_PASS = os.getenv("RABBITMQ_DEFAULT_PASS", "rabbit_password")
     credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASS)
 
-    # The main loop will run forever, attempting to reconnect if the connection is lost
     while True:
         try:
             connection = pika.BlockingConnection(
                 pika.ConnectionParameters(
-                    host=RABBITMQ_HOST,
-                    credentials=credentials,
-                    # Set a heartbeat to detect dead connections
-                    heartbeat=600,
+                    host=RABBITMQ_HOST, credentials=credentials, heartbeat=600
                 )
             )
             print("Execution Orchestrator: Successfully connected to RabbitMQ.")
             channel = connection.channel()
 
-            # Ensure queues exist
             channel.queue_declare(queue="test_generation_queue", durable=True)
-            channel.queue_declare(queue="execution_queue", durable=True)
 
             def callback(ch, method, properties, body):
                 try:
@@ -45,14 +86,24 @@ def main():
                         f" [x] Orchestrator received job: {test_case.get('test_case_id')}"
                     )
 
-                    # Forward the job to the execution queue
+                    is_live_view = test_case.get("is_live_view", False)
+                    target_queue = (
+                        "live_view_queue" if is_live_view else "execution_queue"
+                    )
+
+                    new_run_id = create_initial_record(test_case)
+                    if new_run_id:
+                        test_case["db_run_id"] = new_run_id
+
+                    channel.queue_declare(queue=target_queue, durable=True)
+
                     ch.basic_publish(
                         exchange="",
-                        routing_key="execution_queue",
+                        routing_key=target_queue,
                         body=json.dumps(test_case),
                         properties=pika.BasicProperties(delivery_mode=2),
                     )
-                    print(f" [>] Orchestrator dispatched job to execution queue.")
+                    print(f" [>] Orchestrator dispatched job to queue: {target_queue}.")
                     ch.basic_ack(delivery_tag=method.delivery_tag)
                 except Exception as e:
                     print(f"ERROR in Orchestrator callback: {e}")
@@ -68,7 +119,6 @@ def main():
             )
             channel.start_consuming()
 
-        # Catch exceptions that occur if RabbitMQ is not ready or disconnects
         except (
             pika.exceptions.AMQPConnectionError,
             pika.exceptions.StreamLostError,

@@ -2,34 +2,28 @@ import React, { useState, useEffect } from 'react';
 import TestStep from './TestStep';
 
 const TestCaseEditor = ({ testCase, isExecuting, onRunTest, onGoBack }) => {
-  // Create a local, editable copy of the test case
   const [editableTestCase, setEditableTestCase] = useState(testCase);
 
-  // If the parent component provides a new test case, update our local copy
   useEffect(() => {
     setEditableTestCase(testCase);
   }, [testCase]);
 
-  // Handler to update a specific field of a step
   const handleStepChange = (index, field, value) => {
     const updatedSteps = [...editableTestCase.steps];
     updatedSteps[index] = { ...updatedSteps[index], [field]: value };
     setEditableTestCase({ ...editableTestCase, steps: updatedSteps });
   };
 
-  // Handler to delete a step
   const handleDeleteStep = (index) => {
     const updatedSteps = editableTestCase.steps.filter((_, i) => i !== index);
-    // Re-number the steps after deletion
     const renumberedSteps = updatedSteps.map((step, i) => ({ ...step, step: i + 1 }));
     setEditableTestCase({ ...editableTestCase, steps: renumberedSteps });
   };
 
-  // Handler to add a new, blank step at the end
   const handleAddStep = () => {
     const newStep = {
       step: editableTestCase.steps.length + 1,
-      action: 'CLICK', // Default action
+      action: 'CLICK',
       target_element: '',
       data_key: '',
     };
@@ -39,7 +33,6 @@ const TestCaseEditor = ({ testCase, isExecuting, onRunTest, onGoBack }) => {
     });
   };
 
-  // Handler to update the main objective
   const handleObjectiveChange = (e) => {
     setEditableTestCase({ ...editableTestCase, objective: e.target.value });
   };
@@ -63,7 +56,7 @@ const TestCaseEditor = ({ testCase, isExecuting, onRunTest, onGoBack }) => {
       <div className="steps-container">
         {editableTestCase.steps.map((step, index) => (
           <TestStep
-            key={index} // Using index as key is acceptable here as we are managing the array
+            key={index}
             index={index}
             step={step}
             onStepChange={handleStepChange}
@@ -77,10 +70,14 @@ const TestCaseEditor = ({ testCase, isExecuting, onRunTest, onGoBack }) => {
       </button>
 
       <div className="editor-actions">
-        {/* Run the test with the MODIFIED version */}
-        <button onClick={() => onRunTest(editableTestCase)} disabled={isExecuting}>
+        <button onClick={() => onRunTest(editableTestCase, false)} disabled={isExecuting}>
           {isExecuting ? 'Publishing...' : 'Approve & Run Test'}
         </button>
+        
+        <button onClick={() => onRunTest(editableTestCase, true)} className="secondary-btn" disabled={isExecuting}>
+          Run with Live View
+        </button>
+
         <button onClick={onGoBack} className="secondary-btn" disabled={isExecuting}>
           Cancel
         </button>
