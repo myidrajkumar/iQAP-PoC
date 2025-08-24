@@ -8,6 +8,7 @@ import psycopg2
 from playwright.sync_api import sync_playwright, expect, Error as PlaywrightError
 from PIL import Image, ImageChops
 import io
+import re
 
 load_dotenv()
 
@@ -15,11 +16,13 @@ load_dotenv()
 is_docker = os.environ.get("DOCKER_ENV") == "true"
 
 if is_docker:
-    DB_HOST = "iqap-postgres"  # Docker service name for PostgreSQL
-    RABBITMQ_HOST = "iqap-rabbitmq"  # Docker service name for RabbitMQ
+    DB_HOST = "iqap-postgres"
+    RABBITMQ_HOST = "iqap-rabbitmq"
+    MINIO_HOST = "minio:9000"
 else:
     DB_HOST = os.getenv("POSTGRES_HOST", "localhost")
     RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "localhost")
+    MINIO_HOST = "localhost:9000"
 
 RABBITMQ_USER = os.getenv("RABBITMQ_DEFAULT_USER", "rabbit_user")
 RABBITMQ_PASS = os.getenv("RABBITMQ_DEFAULT_PASS", "rabbit_password")
@@ -27,21 +30,17 @@ DB_NAME = os.getenv("POSTGRES_DB")
 DB_USER = os.getenv("POSTGRES_USER")
 DB_PASS = os.getenv("POSTGRES_PASSWORD")
 
-# Force headless mode in Docker environment to avoid display issues
 if is_docker:
     IS_HEADLESS = True
-    MINIO_HOST = "minio:9000"
     print("Execution Agent: Running in Docker - forcing headless mode")
 else:
     IS_HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
-    MINIO_HOST = "localhost:9000"
 
 # --- MinIO Configuration ---
 MINIO_ACCESS_KEY = os.getenv("MINIO_ROOT_USER")
 MINIO_SECRET_KEY = os.getenv("MINIO_ROOT_PASSWORD")
-VISUAL_BUCKET_NAME = "visual-baselines"
+ARTIFACTS_BUCKET_NAME = "test-artifacts"  # Using a more general name now
 
-# Initialize MinIO Client
 try:
     minio_client = Minio(
         MINIO_HOST,
@@ -50,11 +49,10 @@ try:
         secure=False,
     )
     print("Execution Agent: Successfully initialized MinIO client.")
-    # Ensure the bucket exists
-    found = minio_client.bucket_exists(VISUAL_BUCKET_NAME)
+    found = minio_client.bucket_exists(ARTIFACTS_BUCKET_NAME)
     if not found:
-        minio_client.make_bucket(VISUAL_BUCKET_NAME)
-        print(f"Execution Agent: Created MinIO bucket '{VISUAL_BUCKET_NAME}'.")
+        minio_client.make_bucket(ARTIFACTS_BUCKET_NAME)
+        print(f"Execution Agent: Created MinIO bucket '{ARTIFACTS_BUCKET_NAME}'.")
 except Exception as e:
     print(f"Execution Agent: CRITICAL - Failed to initialize MinIO client: {e}")
     minio_client = None
@@ -62,9 +60,14 @@ except Exception as e:
 
 # --- DB Function ---
 def write_result_to_db(
-    objective: str, status: str, test_case_id: str, visual_status: str = None
+    objective: str,
+    status: str,
+    test_case_id: str,
+    visual_status: str = "N/A",
+    failure_reason: str = None,
+    artifacts_path: str = None,
 ):
-    """Connects to the PostgreSQL database and inserts a test result."""
+    """Connects to PostgreSQL and inserts a test result with failure details."""
     conn = None
     try:
         conn = psycopg2.connect(
@@ -72,9 +75,19 @@ def write_result_to_db(
         )
         cursor = conn.cursor()
         sql = """INSERT INTO test_results
-                 (objective, status, test_case_id, visual_status, timestamp)
-                 VALUES (%s, %s, %s, %s, NOW());"""
-        cursor.execute(sql, (objective, status, test_case_id, visual_status))
+                 (objective, status, test_case_id, visual_status, timestamp, failure_reason, artifacts_path)
+                 VALUES (%s, %s, %s, %s, NOW(), %s, %s);"""
+        cursor.execute(
+            sql,
+            (
+                objective,
+                status,
+                test_case_id,
+                visual_status,
+                failure_reason,
+                artifacts_path,
+            ),
+        )
         conn.commit()
         print(f"  [DB] Result for {test_case_id} saved to database.")
         cursor.close()
@@ -85,17 +98,19 @@ def write_result_to_db(
             conn.close()
 
 
-def handle_visual_test(page, test_case_id: str, step_name: str):
+def handle_visual_test(page, test_case_id: str, step_name: str, artifacts_path: str):
     """Orchestrates a single visual regression test against MinIO."""
     if not minio_client:
         return "N/A", "MinIO client not configured."
 
     screenshot_bytes = page.screenshot()
-    object_name = f"{test_case_id}/{step_name}.png"
+    baseline_object_name = f"baselines/{test_case_id}/{step_name}.png"
 
     try:
-        minio_client.stat_object(VISUAL_BUCKET_NAME, object_name)
-        baseline_response = minio_client.get_object(VISUAL_BUCKET_NAME, object_name)
+        minio_client.stat_object(ARTIFACTS_BUCKET_NAME, baseline_object_name)
+        baseline_response = minio_client.get_object(
+            ARTIFACTS_BUCKET_NAME, baseline_object_name
+        )
         baseline_bytes = baseline_response.read()
 
         img1 = Image.open(io.BytesIO(baseline_bytes)).convert("RGB")
@@ -106,6 +121,16 @@ def handle_visual_test(page, test_case_id: str, step_name: str):
             or ImageChops.difference(img1, img2).getbbox() is not None
         ):
             print("[VISUAL] FAIL: Images do not match baseline.")
+            # --- NEW: Upload failure screenshot for comparison ---
+            failure_image_name = f"{artifacts_path}/visual_failure.png"
+            minio_client.put_object(
+                ARTIFACTS_BUCKET_NAME,
+                failure_image_name,
+                io.BytesIO(screenshot_bytes),
+                len(screenshot_bytes),
+                "image/png",
+            )
+            print(f"  [MinIO] Uploaded visual failure image to {failure_image_name}")
             return "FAIL", "Visuals do not match baseline."
         else:
             print("  [VISUAL] PASS: Images match baseline.")
@@ -114,67 +139,29 @@ def handle_visual_test(page, test_case_id: str, step_name: str):
     except Exception:
         print("  [VISUAL] No baseline found. Creating new one.")
         minio_client.put_object(
-            VISUAL_BUCKET_NAME,
-            object_name,
+            ARTIFACTS_BUCKET_NAME,
+            baseline_object_name,
             io.BytesIO(screenshot_bytes),
             len(screenshot_bytes),
             "image/png",
         )
-        return "BASELINE_CREATED", f"New baseline created: {object_name}"
+        return "BASELINE_CREATED", f"New baseline created: {baseline_object_name}"
 
 
-# --- Locator Function ---
-def find_element_locator(page, target_name: str, ui_blueprint: list):
-    """Dynamically finds a locator from the UI blueprint."""
-    if not target_name:
-        raise ValueError("Target element name cannot be None.")
-
-    target_element_data = next(
-        (el for el in ui_blueprint if el.get("logical_name") == target_name), None
-    )
-
-    if not target_element_data:
-        known_elements = {
-            "inventory_container": {"data-test": "inventory-container"},
-        }
-        if target_name in known_elements:
-            target_element_data = known_elements[target_name]
-        else:
-            raise Exception(
-                f"Logical name '{target_name}' not found in the provided UI blueprint or known elements."
-            )
-
-    # Strategy 1: Use 'data-test' attribute if available (most reliable)
-    if target_element_data.get("data-test"):
-        selector = f"[data-test='{target_element_data['data-test']}']"
-        print(f"  [Locator] Using data-test selector: '{selector}'")
-        return page.locator(selector)
-
-    # Strategy 2: Use 'id' if available
-    if target_element_data.get("id"):
-        selector = f"#{target_element_data['id']}"
-        print(f"  [Locator] Using primary selector: '{selector}'")
-        return page.locator(selector)
-
-    raise Exception(f"Could not determine a stable locator for '{target_name}'.")
-
-
-# --- Test Runner Function ---
+# --- Test Runner Function HEAVILY MODIFIED ---
 def run_test_case(test_case_json: dict):
-    """
-    Executes a test case with robust validation and debugging.
-    """
     print(
         f"--- Raw JSON Received by Agent ---\n{json.dumps(test_case_json, indent=2)}\n---------------------------------"
     )
 
-    # Validate the incoming JSON before running
-    if not all(
-        k in test_case_json
-        for k in ["test_case_id", "objective", "parameters", "steps"]
-    ):
+    if not all(k in test_case_json for k in ["test_case_id", "objective", "steps"]):
         print("[FATAL] Received malformed test case JSON. Aborting run.")
-        write_result_to_db("Malformed Test Case", "FAIL", "INVALID_JSON")
+        write_result_to_db(
+            "Malformed Test Case",
+            "FAIL",
+            "INVALID_JSON",
+            failure_reason="Test case JSON was missing required keys.",
+        )
         return
 
     objective = test_case_json.get("objective")
@@ -186,35 +173,42 @@ def run_test_case(test_case_json: dict):
     for params in parameter_sets:
         dataset_name = params.get("dataset_name", "default")
         dataset = params.get("data", {})
+
+        # --- NEW: Create a unique path for this specific run's artifacts ---
+        run_id_suffix = re.sub(r"[^a-zA-Z0-9_-]", "", dataset_name)
+        timestamp_slug = time.strftime("%Y%m%d-%H%M%S")
+        artifacts_path = f"runs/{test_case_id_base}/{run_id_suffix}-{timestamp_slug}"
         run_id = f"{test_case_id_base}-{dataset_name}"
 
         print(f"\n--- Starting Test Run: {run_id} ---")
+        print(f"    Artifacts will be stored at: {artifacts_path}")
         status = "FAIL"
         visual_status = "N/A"
+        failure_reason = None
+        browser = None
+        context = None
         page = None
 
         try:
             with sync_playwright() as p:
-                # Configure browser launch options for containers
                 launch_options = {
                     "headless": IS_HEADLESS,
                     "slow_mo": 500 if not IS_HEADLESS else 0,
                 }
-
-                # Add additional arguments for Docker/Linux containers
                 if is_docker or IS_HEADLESS:
                     launch_options["args"] = [
                         "--no-sandbox",
                         "--disable-setuid-sandbox",
                         "--disable-dev-shm-usage",
-                        "--disable-accelerated-2d-canvas",
-                        "--no-first-run",
-                        "--no-zygote",
-                        "--disable-gpu",
                     ]
 
                 browser = p.chromium.launch(**launch_options)
-                page = browser.new_page()
+
+                # --- NEW: Create a context to enable tracing ---
+                context = browser.new_context()
+                context.tracing.start(screenshots=True, snapshots=True, sources=True)
+                page = context.new_page()
+
                 page.goto(target_url, timeout=60000)
 
                 for step in test_case_json.get("steps", []):
@@ -257,27 +251,55 @@ def run_test_case(test_case_json: dict):
                     )
 
                 print("\nWaiting for page to settle before visual test...")
-                # It waits until there are no network connections for 500ms.
                 page.wait_for_load_state("networkidle")
 
                 print("\nPerforming Visual Test...")
-                visual_status, _ = handle_visual_test(page, run_id, "final_page_view")
+                visual_status, _ = handle_visual_test(
+                    page, run_id, "final_page_view", artifacts_path
+                )
 
                 print("\nAll test steps completed successfully.")
                 status = "PASS"
-                browser.close()
 
         except Exception as e:
-            print(f"[FAIL] Test run finished with an unhandled error: {e}")
+            print(f"[FAIL] Test run finished with an error: {e}")
             status = "FAIL"
-            visual_status = "N/A"
-            if page and not page.is_closed():
-                screenshot_path = (
-                    f"debug/failure_{run_id}_{time.strftime('%Y%m%d-%H%M%S')}.png"
-                )
-                page.screenshot(path=screenshot_path)
-                print(f"Screenshot saved to: {screenshot_path}")
+            failure_reason = str(e)  # Capture the error message
+            if page and minio_client:
+                # --- NEW: Capture and upload failure artifacts ---
+                try:
+                    # 1. Failure Screenshot
+                    screenshot_path = f"{artifacts_path}/failure.png"
+                    screenshot_bytes = page.screenshot()
+                    minio_client.put_object(
+                        ARTIFACTS_BUCKET_NAME,
+                        screenshot_path,
+                        io.BytesIO(screenshot_bytes),
+                        len(screenshot_bytes),
+                        "image/png",
+                    )
+                    print(f"  [MinIO] Uploaded failure screenshot to {screenshot_path}")
+
+                    # 2. Playwright Trace
+                    if context:
+                        trace_path_local = f"debug/trace_{timestamp_slug}.zip"
+                        context.tracing.stop(path=trace_path_local)
+                        trace_path_remote = f"{artifacts_path}/trace.zip"
+                        minio_client.fput_object(
+                            ARTIFACTS_BUCKET_NAME, trace_path_remote, trace_path_local
+                        )
+                        print(f"  [MinIO] Uploaded trace file to {trace_path_remote}")
+                        os.remove(trace_path_local)  # Clean up local trace file
+                except Exception as artifact_error:
+                    print(
+                        f"  [ERROR] Could not save failure artifacts: {artifact_error}"
+                    )
         finally:
+            if context:
+                context.close()
+            if browser:
+                browser.close()
+
             print(f"--- Test Run Finished with Status: {status} ---")
             final_objective = objective + f" ({dataset_name})"
             write_result_to_db(
@@ -285,6 +307,12 @@ def run_test_case(test_case_json: dict):
                 status=status,
                 test_case_id=run_id,
                 visual_status=visual_status,
+                failure_reason=failure_reason,
+                artifacts_path=(
+                    artifacts_path
+                    if status == "FAIL" or visual_status == "FAIL"
+                    else None
+                ),
             )
 
 

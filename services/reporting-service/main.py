@@ -13,7 +13,7 @@ load_dotenv()
 is_docker = os.environ.get("DOCKER_ENV") == "true"
 
 if is_docker:
-    DB_HOST = "iqap-postgres"  # Docker service name for PostgreSQL
+    DB_HOST = "iqap-postgres"
 else:
     DB_HOST = os.getenv("POSTGRES_HOST", "localhost")
 DB_NAME = os.getenv("POSTGRES_DB")
@@ -24,14 +24,8 @@ DB_PORT = os.getenv("POSTGRES_PORT", "5432")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    The modern, recommended way to manage application startup and shutdown.
-    This will run on startup before the application starts receiving requests.
-    """
     print("Reporting Service: Lifespan startup event...")
-
     conn = None
-    # This resilient loop ensures the service doesn't fully start until the DB is ready.
     while True:
         try:
             print("Reporting Service: Attempting to connect to PostgreSQL...")
@@ -50,42 +44,54 @@ async def lifespan(app: FastAPI):
                     objective TEXT,
                     status VARCHAR(50),
                     visual_status VARCHAR(50),
-                    step_results JSONB,
-                    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    failure_reason TEXT,
+                    artifacts_path VARCHAR(255)
                 );
             """
             )
+            # --- Check and add new columns if they don't exist (for backward compatibility) ---
+            cursor.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name='test_results' AND column_name='failure_reason'"
+            )
+            if cursor.fetchone() is None:
+                cursor.execute(
+                    "ALTER TABLE test_results ADD COLUMN failure_reason TEXT;"
+                )
+
+            cursor.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name='test_results' AND column_name='artifacts_path'"
+            )
+            if cursor.fetchone() is None:
+                cursor.execute(
+                    "ALTER TABLE test_results ADD COLUMN artifacts_path VARCHAR(255);"
+                )
 
             conn.commit()
             cursor.close()
             print("Reporting Service: Database table 'test_results' is ready.")
-            break  # Exit the loop on success
+            break
 
         except psycopg2.OperationalError:
             print(
                 "Reporting Service: PostgreSQL not ready yet. Waiting 5 seconds to retry..."
             )
-            # Use asyncio.sleep for non-blocking waits in an async context
             await asyncio.sleep(5)
         except Exception as e:
             print(
                 f"CRITICAL ERROR during startup: Could not initialize database table. {e}"
             )
-            await asyncio.sleep(5)  # Wait before retrying on other errors
+            await asyncio.sleep(5)
         finally:
             if conn is not None:
                 conn.close()
 
-    # --- The application is now running ---
     yield
-    # --- Shutdown logic would go here, after the yield ---
     print("Reporting Service: Lifespan shutdown event...")
 
 
-# --- Initialize FastAPI App with the new lifespan manager ---
 app = FastAPI(lifespan=lifespan)
 
-# --- CORS Middleware ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
@@ -122,7 +128,6 @@ def get_test_results():
         return results
     except Exception as e:
         print(f"ERROR fetching results: {e}")
-        # This will catch the "relation does not exist" error if the table somehow wasn't created
         raise HTTPException(
             status_code=500, detail="Failed to fetch test results from database."
         )
@@ -131,6 +136,7 @@ def get_test_results():
             conn.close()
 
 
+# This endpoint is now more important than ever for the details page
 @app.get("/results/{run_id}")
 def get_run_details(run_id: int):
     """Fetches all details for a single, specific test run by its primary key ID."""

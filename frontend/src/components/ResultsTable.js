@@ -1,4 +1,5 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 
 const ResultsTable = ({ results, onRefresh }) => (
   <div className="form-right">
@@ -13,6 +14,7 @@ const ResultsTable = ({ results, onRefresh }) => (
             <th>Status</th>
             <th>Visual Status</th>
             <th>Timestamp</th>
+            <th>Details</th>
           </tr>
         </thead>
         <tbody>
@@ -23,9 +25,16 @@ const ResultsTable = ({ results, onRefresh }) => (
               <td><span className={`status-badge status-${result.status?.toLowerCase()}`}>{result.status}</span></td>
               <td><span className={`status-badge status-${result.visual_status?.toLowerCase()?.replace(/_/g, '-').replace('/', '-') || 'n-a'}`}>{result.visual_status || 'N/A'}</span></td>
               <td>{new Date(result.timestamp).toLocaleString()}</td>
+              <td>
+                {result.status === 'FAIL' || result.visual_status === 'FAIL' ? (
+                  <Link to={`/results/${result.id}`}>View</Link>
+                ) : (
+                  '--'
+                )}
+              </td>
             </tr>
           )) : (
-            <tr><td colSpan="5">No results found. Run a test to see history.</td></tr>
+            <tr><td colSpan="6">No results found. Run a test to see history.</td></tr>
           )}
         </tbody>
       </table>
