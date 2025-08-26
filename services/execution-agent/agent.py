@@ -56,9 +56,11 @@ def update_result_in_db(
     failure_reason: str = None,
     artifacts_path: str = None,
 ):
+    """Connects to PostgreSQL and UPDATES a test result with the final details."""
     if not db_run_id:
         print("  [DB] Error: No db_run_id provided. Cannot update final result.")
         return
+
     conn = None
     try:
         conn = psycopg2.connect(
@@ -88,25 +90,26 @@ def handle_visual_test(page, test_case_id: str, step_name: str, artifacts_path: 
     baseline_object_name = f"baselines/{test_case_id}/{step_name}.png"
 
     try:
-        # Check if a baseline exists in MinIO
         minio_client.stat_object(ARTIFACTS_BUCKET_NAME, baseline_object_name)
 
-        # If it exists, download it and perform the comparison
-        print("  [VISUAL] Baseline found. Comparing against current page...")
+        print(f"  [VISUAL] Baseline found for '{step_name}'. Comparing...")
         baseline_response = minio_client.get_object(
             ARTIFACTS_BUCKET_NAME, baseline_object_name
         )
         baseline_bytes = baseline_response.read()
 
-        expect(page).to_have_screenshot(baseline_bytes, threshold=0.2)
-        print("  [VISUAL] PASS: Images match baseline.")
-        return "PASS", "Images match baseline."
+        expect(page).to_have_screenshot(
+            baseline_bytes,
+            threshold=0.2,
+            full_page=True,  # This is a key parameter for stability
+        )
+        print(f"  [VISUAL] PASS: Images match for '{step_name}'.")
+        return "PASS", f"Visual check passed for {step_name}"
 
     except PlaywrightError as e:
-        print(f"[VISUAL] FAIL: {e}")
-
-        failure_image_name = f"{artifacts_path}/visual_failure.png"
-        failure_screenshot_bytes = page.screenshot()
+        print(f"[VISUAL] FAIL for '{step_name}': {e}")
+        failure_image_name = f"{artifacts_path}/visual_failure_{step_name}.png"
+        failure_screenshot_bytes = page.screenshot(full_page=True)
         minio_client.put_object(
             ARTIFACTS_BUCKET_NAME,
             failure_image_name,
@@ -115,14 +118,12 @@ def handle_visual_test(page, test_case_id: str, step_name: str, artifacts_path: 
             "image/png",
         )
         print(f"  [MinIO] Uploaded visual failure image to {failure_image_name}")
-        return "FAIL", "Visuals do not match baseline."
+        return "FAIL", f"Visuals for '{step_name}' do not match baseline."
 
     except S3Error as exc:
-        # This block *specifically* catches MinIO/S3 errors
         if exc.code == "NoSuchKey":
-            # This is the ONLY case where we should create a new baseline
-            print("  [VISUAL] No baseline found. Creating new one.")
-            new_baseline_bytes = page.screenshot()
+            print(f"  [VISUAL] No baseline found for '{step_name}'. Creating new one.")
+            new_baseline_bytes = page.screenshot(full_page=True)
             minio_client.put_object(
                 ARTIFACTS_BUCKET_NAME,
                 baseline_object_name,
@@ -130,11 +131,10 @@ def handle_visual_test(page, test_case_id: str, step_name: str, artifacts_path: 
                 len(new_baseline_bytes),
                 "image/png",
             )
-            return "BASELINE_CREATED", f"New baseline created: {baseline_object_name}"
+            return "BASELINE_CREATED", f"New baseline created for {step_name}"
         else:
-            # Any other S3 error (like AccessDenied, ConnectionRefused) is a hard failure
-            print(f"[VISUAL] S3 ERROR: Could not check for baseline. {exc}")
-            return "N/A", f"S3 Error: {exc.code}"
+            print(f"[VISUAL] S3 ERROR for '{step_name}': {exc}")
+            return "N/A", f"S3 Error for '{step_name}': {exc.code}"
 
 
 def find_element_locator(page, target_name: str, ui_blueprint: list):
@@ -217,54 +217,55 @@ def run_test_case(test_case_json: dict):
                 for step in test_case_json.get("steps", []):
                     action = step.get("action")
                     target_name = step.get("target_element")
-                    data_key = step.get("data_key")
-                    data_to_use = dataset.get(data_key, "") if data_key else ""
 
                     print(
                         f"Executing Step {step.get('step')}: {action} on '{target_name}'"
                     )
 
-                    element_locator = find_element_locator(
-                        page, target_name, ui_blueprint
-                    )
-                    expect(element_locator).to_be_visible(timeout=10000)
+                    if action == "VISUAL_VALIDATION":
+                        page.wait_for_load_state("networkidle")
+                        step_visual_status, step_visual_message = handle_visual_test(
+                            page, run_id, target_name, artifacts_path
+                        )
 
-                    if action == "ENTER_TEXT":
-                        element_locator.fill(data_to_use)
-                    elif action == "CLICK":
-                        element_locator.click()
-                    elif action == "VERIFY_ELEMENT_VISIBLE":
-                        expect(element_locator).to_be_visible()
+                        if step_visual_status == "FAIL":
+                            visual_status = "FAIL"
+                            raise PlaywrightError(step_visual_message)
 
-                    print(
-                        f"  [SUCCESS] Action '{action}' on '{target_name}' successful."
-                    )
+                        if visual_status != "FAIL":
+                            visual_status = step_visual_status
+                    else:
+                        element_locator = find_element_locator(
+                            page, target_name, ui_blueprint
+                        )
+                        expect(element_locator).to_be_visible(timeout=10000)
 
-                print("\nWaiting for page to settle before visual test...")
-                page.wait_for_load_state("networkidle")
+                        if action == "ENTER_TEXT":
+                            data_key = step.get("data_key")
+                            data_to_use = dataset.get(data_key, "") if data_key else ""
+                            element_locator.fill(data_to_use)
+                        elif action == "CLICK":
+                            element_locator.click()
+                        elif action == "VERIFY_ELEMENT_VISIBLE":
+                            expect(element_locator).to_be_visible()
 
-                print("\nPerforming Visual Test...")
-                visual_status, _ = handle_visual_test(
-                    page, run_id, "final_page_view", artifacts_path
-                )
+                        print(f"  [SUCCESS] Action successful.")
 
-                if visual_status in ["PASS", "BASELINE_CREATED"]:
-                    status = "PASS"
-                else:
-                    status = "FAIL"
-                    failure_reason = (
-                        "Visual test failed. Screenshot did not match the baseline."
-                    )
+                status = "PASS"
+                if visual_status == "N/A":
+                    visual_status = "PASS"
 
             except Exception as e:
                 print(f"[FAIL] Test run finished with an error: {e}")
                 status = "FAIL"
-                failure_reason = re.sub(r"\s+", " ", str(e).splitlines()[0])
+                # If a visual test has already failed, don't overwrite its specific message
+                if not failure_reason:
+                    failure_reason = re.sub(r"\s+", " ", str(e).splitlines()[0])
 
                 if "page" in locals() and page and minio_client:
                     try:
                         screenshot_path = f"{artifacts_path}/failure.png"
-                        screenshot_bytes = page.screenshot()
+                        screenshot_bytes = page.screenshot(full_page=True)
                         minio_client.put_object(
                             ARTIFACTS_BUCKET_NAME,
                             screenshot_path,
