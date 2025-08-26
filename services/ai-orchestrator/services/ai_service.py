@@ -19,10 +19,9 @@ class AIService:
     def __init__(self, api_key: str, model_name: str, temperature: float):
         self.model = None
         if not api_key:
-            logger.critical(
-                "CRITICAL ERROR: GOOGLE_API_KEY is not set. AI Service will use fallback."
+            raise ValueError(
+                "CRITICAL ERROR: GOOGLE_API_KEY is not set. AI Service cannot start."
             )
-            return
         try:
             genai.configure(api_key=api_key)
             generation_config = {"temperature": temperature}
@@ -31,7 +30,7 @@ class AIService:
             )
             logger.info("Successfully configured Gemini Pro model : %s", model_name)
         except Exception as e:
-            logger.critical(
+            raise RuntimeError(
                 f"CRITICAL ERROR: Failed to configure Gemini API. Error: {e}"
             )
 
@@ -42,8 +41,9 @@ class AIService:
         Returns a fallback mock test case if the AI model is not configured or if the API call fails.
         """
         if not self.model:
-            logger.warning("Gemini model not configured. Using fallback.")
-            return self._get_fallback_test_case()
+            raise RuntimeError(
+                "Gemini model is not configured. Cannot generate test case."
+            )
 
         prompt = self._build_prompt(requirement, ui_blueprint)
 
@@ -61,14 +61,12 @@ class AIService:
                 logger.info("Gemini API call successful and response is valid.")
                 return result
             else:
-                logger.warning(
-                    "Gemini response was valid JSON but missed required keys. Using fallback."
-                )
-                return self._get_fallback_test_case()
+                logger.error("Gemini response was valid JSON but missed required keys.")
+                raise ValueError("AI failed to generate a valid test case structure.")
 
         except Exception as e:
             logger.warning(f"Gemini API call or parsing failed: {e}. Using fallback.")
-            return self._get_fallback_test_case()
+            raise ValueError(f"An error occurred during AI generation: {e}")
 
     def _build_prompt(self, requirement: str, ui_blueprint: str) -> str:
         """Constructs the prompt to be sent to the Gemini model."""
@@ -77,45 +75,27 @@ class AIService:
 
         **CRITICAL RULES:**
         1.  **Mandatory Keys:** The final JSON object MUST contain these exact top-level keys: `test_case_id`, `objective`, `parameters`, `steps`.
-        2.  **Key Naming:** Do NOT use variations like `id` or `test_id`. You MUST use `test_case_id`.
-        3.  **Content Source:** Base the test steps EXCLUSIVELY on the provided "Business Requirement".
-        4.  **Element Mapping:** Use the "UI Blueprint" to find the correct `logical_name` for each element in the `steps`. This is the most important mapping.
-        5.  **Action Types:** The value for the `action` key in each step MUST be one of these three strings ONLY: "ENTER_TEXT", "CLICK", "VERIFY_ELEMENT_VISIBLE".
-        6.  **Parameter Matching:** Any `logical_name` used in a step that requires data (like "ENTER_TEXT") MUST have a corresponding key-value pair in the `data` object inside the `parameters` array.
-        7.  **Output Format:** You MUST return ONLY the raw JSON object. Do not include any explanatory text, markdown formatting like ```json, or any other characters before or after the JSON structure.
+        2.  **Action Types:** The value for the `action` key in each step MUST be one of these strings ONLY: "ENTER_TEXT", "CLICK", "VERIFY_ELEMENT_VISIBLE", "VISUAL_VALIDATION".
+        3.  **VISUAL_VALIDATION:** Use this action after a critical step (like a login or navigating to a new page) to take a visual snapshot. The `target_element` for this action should be a descriptive name for the view, e.g., "inventory_page" or "login_screen".
+        4.  **Output Format:** You MUST return ONLY the raw JSON object. Do not include any explanatory text or markdown.
 
         ---
         **GOOD JSON EXAMPLE:**
         {{
-            "test_case_id": "TC_LOGIN_VALID",
-            "objective": "Verify a user can log in with valid credentials.",
+            "test_case_id": "TC_LOGIN_LOGOUT_VISUAL",
+            "objective": "Verify a user can log in and then log out, with visual checks.",
             "parameters": [
                 {{
                     "dataset_name": "valid_credentials",
-                    "data": {{
-                        "Username": "standard_user",
-                        "Password": "secret_sauce"
-                    }}
+                    "data": {{ "Username": "standard_user", "Password": "secret_sauce" }}
                 }}
             ],
             "steps": [
-                {{
-                    "step": 1,
-                    "action": "ENTER_TEXT",
-                    "target_element": "Username",
-                    "data_key": "Username"
-                }},
-                {{
-                    "step": 2,
-                    "action": "ENTER_TEXT",
-                    "target_element": "Password",
-                    "data_key": "Password"
-                }},
-                {{
-                    "step": 3,
-                    "action": "CLICK",
-                    "target_element": "Login"
-                }}
+                {{ "step": 1, "action": "VISUAL_VALIDATION", "target_element": "login_page_initial_view" }},
+                {{ "step": 2, "action": "ENTER_TEXT", "target_element": "Username", "data_key": "Username" }},
+                {{ "step": 3, "action": "ENTER_TEXT", "target_element": "Password", "data_key": "Password" }},
+                {{ "step": 4, "action": "CLICK", "target_element": "Login" }},
+                {{ "step": 5, "action": "VISUAL_VALIDATION", "target_element": "inventory_page_after_login" }}
             ]
         }}
         ---
@@ -131,39 +111,6 @@ class AIService:
         ---
         Generate the JSON test case now.
         """
-
-    def _get_fallback_test_case(self) -> Dict[str, Any]:
-        """Provides a reliable fallback test case."""
-        return {
-            "test_case_id": "TC001_FALLBACK",
-            "objective": "Verify a user can log in with valid credentials.",
-            "parameters": [
-                {
-                    "dataset_name": "valid_credentials",
-                    "data": {"user-name": "standard_user", "password": "secret_sauce"},
-                }
-            ],
-            "steps": [
-                {
-                    "step": 1,
-                    "action": "ENTER_TEXT",
-                    "target_element": "user-name",
-                    "data_key": "user-name",
-                },
-                {
-                    "step": 2,
-                    "action": "ENTER_TEXT",
-                    "target_element": "password",
-                    "data_key": "password",
-                },
-                {
-                    "step": 3,
-                    "action": "CLICK",
-                    "target_element": "login-button",
-                    "verifications": {"element_to_verify": "inventory_container"},
-                },
-            ],
-        }
 
 
 # Create a single instance of the AI service to be reused
