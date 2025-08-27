@@ -1,3 +1,4 @@
+import filecmp
 from dotenv import load_dotenv
 import pika
 import os
@@ -173,20 +174,20 @@ def run_test_case(test_case_json: dict):
 
         print(f"\n--- Starting Test Run: {run_id} ---")
 
-        status = "FAIL"
+        status = "PASS"
         visual_status = "N/A"
         failure_reason = None
         has_visual_failure = False
 
         with sync_playwright() as p:
             context = None
+            browser = None
             try:
                 launch_options = {
                     "headless": IS_HEADLESS,
                     "slow_mo": 100 if not IS_HEADLESS else 0,
                 }
                 if is_docker:
-                    # These args are necessary for running in a container
                     launch_options["args"] = [
                         "--no-sandbox",
                         "--disable-setuid-sandbox",
@@ -221,7 +222,8 @@ def run_test_case(test_case_json: dict):
                     if action == "VISUAL_VALIDATION":
                         page.wait_for_load_state("networkidle", timeout=10000)
                         baseline_object_name = f"baselines/{run_id}/{target_name}.png"
-                        temp_baseline_path = f"debug/temp_baseline_{timestamp_slug}.png"
+                        temp_baseline_path = f"debug/baseline_{timestamp_slug}.png"
+                        current_screenshot_path = f"debug/current_{timestamp_slug}.png"
 
                         try:
                             minio_client.fget_object(
@@ -232,15 +234,36 @@ def run_test_case(test_case_json: dict):
                             print(
                                 f"  [VISUAL] Baseline found for '{target_name}'. Comparing..."
                             )
-
-                            expect(page).to_have_screenshot(
-                                path=temp_baseline_path, threshold=0.2, full_page=True
+                            page.screenshot(
+                                path=current_screenshot_path, full_page=True
                             )
 
-                            if (
-                                visual_status != "FAIL"
-                            ):  # Don't override a previous failure
-                                visual_status = "PASS"
+                            if not filecmp.cmp(
+                                temp_baseline_path,
+                                current_screenshot_path,
+                                shallow=False,
+                            ):
+                                print("  [VISUAL] Mismatch detected.")
+                                visual_status = "FAIL"
+                                has_visual_failure = True
+                                failure_artifact_name = (
+                                    f"{artifacts_path}/visual_failure.png"
+                                )
+                                minio_client.fput_object(
+                                    ARTIFACTS_BUCKET_NAME,
+                                    failure_artifact_name,
+                                    current_screenshot_path,
+                                )
+                                print(
+                                    f"  [VISUAL] Uploaded failed screenshot to {failure_artifact_name}"
+                                )
+                                raise AssertionError(
+                                    f"Visual mismatch for element '{target_name}'."
+                                )
+                            else:
+                                print("  [VISUAL] Screenshots match.")
+                                if visual_status != "FAIL":
+                                    visual_status = "PASS"
 
                         except S3Error as exc:
                             if exc.code == "NoSuchKey":
@@ -253,35 +276,22 @@ def run_test_case(test_case_json: dict):
                                     baseline_object_name,
                                     io.BytesIO(new_baseline_bytes),
                                     len(new_baseline_bytes),
+                                    content_type="image/png",
+                                )
+                                print(
+                                    f"  [VISUAL] New baseline uploaded to {baseline_object_name}"
                                 )
                                 if visual_status != "FAIL":
                                     visual_status = "BASELINE_CREATED"
                             else:
-                                raise  # Re-raise other MinIO errors
-                        except PlaywrightError:
-                            # This block executes on visual mismatch
-                            visual_status = "FAIL"
-                            # Only set the visual failure flag if it hasn't been set before
-                            # This ensures we only save one screenshot for the whole run
-                            if not has_visual_failure:
-                                has_visual_failure = True
-                                # --- FIX: Save artifact with a consistent name ---
-                                failure_image_name = (
-                                    f"{artifacts_path}/visual_failure.png"
-                                )
-                                failure_bytes = page.screenshot(full_page=True)
-                                minio_client.put_object(
-                                    ARTIFACTS_BUCKET_NAME,
-                                    failure_image_name,
-                                    io.BytesIO(failure_bytes),
-                                    len(failure_bytes),
-                                )
-                            raise  # Re-raise to trigger the main failure logic
+                                raise
                         finally:
                             if os.path.exists(temp_baseline_path):
                                 os.remove(temp_baseline_path)
+                            if os.path.exists(current_screenshot_path):
+                                os.remove(current_screenshot_path)
+
                     else:
-                        # Use the new robust locator function
                         element_locator = find_element_locator(
                             page, target_name, ui_blueprint
                         )
@@ -292,7 +302,6 @@ def run_test_case(test_case_json: dict):
                             element_locator.click()
                             page.wait_for_load_state("domcontentloaded")
                         elif action == "VERIFY_ELEMENT_VISIBLE":
-                            # This check is already done above, but we keep it for logical clarity
                             expect(element_locator).to_be_visible()
 
                     print(
@@ -307,17 +316,13 @@ def run_test_case(test_case_json: dict):
                         },
                     )
 
-                status = "PASS"
-
-            except Exception as e:
+            except (PlaywrightError, ValueError, AssertionError) as e:
                 print(f"[FAIL] Test run finished with an error: {e}")
                 status = "FAIL"
-                if has_visual_failure and not failure_reason:
-                    failure_reason = (
-                        "Visual test failed. Screenshot did not match the baseline."
-                    )
-                else:
-                    failure_reason = re.sub(r"\s+", " ", str(e).splitlines()[0])
+                failure_reason = re.sub(r"\s+", " ", str(e).splitlines()[0])
+
+                if has_visual_failure and "Visual mismatch" in failure_reason:
+                    failure_reason = "Visual test failed: The current screen did not match the approved baseline."
 
                 send_realtime_update(
                     db_run_id,
@@ -344,31 +349,37 @@ def run_test_case(test_case_json: dict):
                                 trace_path_remote,
                                 trace_path_local,
                             )
-                            os.remove(trace_path_local)
+                            if os.path.exists(trace_path_local):
+                                os.remove(trace_path_local)
                     except Exception as artifact_error:
                         print(
                             f"  [ERROR] Could not save failure artifacts: {artifact_error}"
                         )
+
             finally:
                 if context:
                     context.close()
-                if "browser" in locals() and browser:
+                if browser:
                     browser.close()
 
         if status == "PASS":
-            # If the test passed but no visual tests were run, mark visual as PASS
-            if visual_status == "N/A":
-                visual_status = "PASS"
+            final_visual_status = visual_status if visual_status != "N/A" else "PASS"
             send_realtime_update(
                 db_run_id,
-                {"type": "run_end", "status": "PASS", "visual_status": visual_status},
+                {
+                    "type": "run_end",
+                    "status": "PASS",
+                    "visual_status": final_visual_status,
+                },
             )
+        else:  # This path is hit if an error occurred
+            final_visual_status = "FAIL" if has_visual_failure else visual_status
 
         print(f"--- Test Run Finished with Status: {status} ---")
         update_result_in_db(
             db_run_id=db_run_id,
             status=status,
-            visual_status=visual_status,
+            visual_status=visual_status if status == "PASS" else "FAIL",
             failure_reason=failure_reason,
             artifacts_path=(
                 artifacts_path if status == "FAIL" or has_visual_failure else None

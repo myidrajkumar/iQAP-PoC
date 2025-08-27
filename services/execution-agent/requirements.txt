@@ -1,5 +1,5 @@
 python-dotenv
-playwright==1.53.0
+playwright
 pika
 psycopg2-binary
 Pillow

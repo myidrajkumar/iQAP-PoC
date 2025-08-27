@@ -9,7 +9,6 @@ pip install -r ./services/ai-orchestrator/requirements.txt
 
 # discovery-service setup
 pip install -r ./services/discovery-service/requirements.txt
-playwright install
 
 # reporting-service setup
 pip install -r ./services/reporting-service/requirements.txt

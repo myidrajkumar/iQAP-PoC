@@ -1,5 +1,5 @@
 fastapi
 uvicorn[standard]
-playwright==1.53.0
+playwright
 pydantic
 pydantic-settings
