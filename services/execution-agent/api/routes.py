@@ -16,9 +16,10 @@ class StepExecutionRequest(BaseModel):
     is_live_view: bool
 
 @router.post("/execute-step")
-async def execute_step_endpoint(request: StepExecutionRequest):
+def execute_step_endpoint(request: StepExecutionRequest):
     """
     Receives a single step, executes it, and returns the result.
+    This is a synchronous endpoint to work correctly with Playwright's sync API.
     """
     logger.info(f"Executing step for run_id {request.db_run_id}: {request.step}")
     try:
@@ -26,7 +27,6 @@ async def execute_step_endpoint(request: StepExecutionRequest):
         return result
     except Exception as e:
         logger.error(f"Error during step execution: {e}", exc_info=True)
-        # Return a failure object consistent with the executor's return type
         return {
             "status": "fail",
             "new_url": request.target_url,

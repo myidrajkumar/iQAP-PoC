@@ -20,6 +20,7 @@ async def run_agent_journey(journey_request: dict):
     history = []
     current_url = target_url
     ui_blueprint = None
+    final_visual_status = "N/A"
 
     for i in range(MAX_STEPS):
         try:
@@ -44,7 +45,7 @@ async def run_agent_journey(journey_request: dict):
                     response = await client.post(settings.DISCOVERY_SERVICE_URL, json={"url": discovery_url}, timeout=60.0)
                     response.raise_for_status()
                     ui_blueprint = response.json()
-                current_url = discovery_url # Update current URL after discovery
+                current_url = discovery_url
                 history.append(f"Observation: Discovered {len(ui_blueprint.get('elements', []))} elements.")
 
             elif action == "execute_step":
@@ -68,43 +69,46 @@ async def run_agent_journey(journey_request: dict):
                 if execution_result.get("status") == "success":
                     current_url = execution_result.get("new_url", current_url)
                     history.append(f"Observation: Step successful. Now at URL: {current_url}")
-                    # After a successful action, we must re-discover the UI
                     ui_blueprint = None
                 else:
                     reason = execution_result.get("reason", "Unknown execution error.")
                     history.append(f"Observation: Step failed! Reason: {reason}")
-                    await update_final_status(db_run_id, "FAIL", reason, history)
+                    await update_final_status(db_run_id, "FAIL", "FAIL", reason, history)
                     return
 
             elif action == "finish":
                 reason = parameters.get("reason", "Objective completed.")
                 history.append(f"Action: Finishing test with status SUCCESS.")
-                await update_final_status(db_run_id, "PASS", reason, history)
+                # If we finish successfully, the visual status is implicitly a PASS unless a visual step failed.
+                final_visual_status = "PASS" if final_visual_status == "N/A" else final_visual_status
+                await update_final_status(db_run_id, "PASS", final_visual_status, reason, history)
                 return
             
             elif action == "fail":
                 reason = parameters.get("reason", "Agent determined failure.")
                 history.append(f"Action: Failing test.")
-                await update_final_status(db_run_id, "FAIL", reason, history)
+                await update_final_status(db_run_id, "FAIL", "FAIL", reason, history)
                 return
 
         except Exception as e:
             logger.error(f"FATAL ERROR in agent loop: {e}", exc_info=True)
-            await update_final_status(db_run_id, "FAIL", f"Orchestrator Error: {e}", history)
+            await update_final_status(db_run_id, "FAIL", "FAIL", f"Orchestrator Error: {e}", history)
             return
 
-    # If the loop finishes due to MAX_STEPS
-    await update_final_status(db_run_id, "FAIL", "Agent exceeded maximum step limit.", history)
+    await update_final_status(db_run_id, "FAIL", "FAIL", "Agent exceeded maximum step limit.", history)
 
 
-async def update_final_status(db_run_id: int, status: str, reason: str, history: list):
+async def update_final_status(db_run_id: int, status: str, visual_status: str, reason: str, history: list):
     """
-    Updates the final status of the test run in the reporting service.
+    Updates the final status and visual_status of the test run.
     """
-    logger.info(f"Updating final status for run {db_run_id}: {status}. Reason: {reason}")
+    logger.info(f"Updating final status for run {db_run_id}: {status}, Visual: {visual_status}. Reason: {reason}")
     try:
-        # We can enhance this later to save the full history
-        payload = {"status": status, "failure_reason": reason}
+        payload = {
+            "status": status,
+            "visual_status": visual_status,
+            "failure_reason": reason
+        }
         async with httpx.AsyncClient() as client:
             await client.put(f"{settings.REPORTING_SERVICE_URL}/results/{db_run_id}/final-status", json=payload, timeout=30.0)
     except Exception as e:

@@ -17,19 +17,16 @@ load_dotenv()
 
 # --- Configurations ---
 is_docker = os.environ.get("DOCKER_ENV") == "true"
-
 if is_docker:
     DB_HOST = "iqap-postgres"
     REALTIME_SERVICE_URL = "http://realtime-service:8003"
 else:
     DB_HOST = os.getenv("POSTGRES_HOST", "localhost")
     REALTIME_SERVICE_URL = os.getenv("REALTIME_SERVICE_URL", "http://localhost:8003")
-
 DB_NAME = os.getenv("POSTGRES_DB")
 DB_USER = os.getenv("POSTGRES_USER")
 DB_PASS = os.getenv("POSTGRES_PASSWORD")
 DB_PORT = os.getenv("POSTGRES_PORT", "5432")
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -83,7 +80,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
@@ -100,18 +96,15 @@ class InitialRunRequest(BaseModel):
 
 class FinalStatusRequest(BaseModel):
     status: str
+    visual_status: str
     failure_reason: Optional[str] = None
 
 # --- Helper Functions ---
 def get_db_connection():
-    """Establishes and returns a database connection for API calls."""
     try:
-        conn = psycopg2.connect(
-            dbname=DB_NAME, user=DB_USER, password=DB_PASS, host=DB_HOST, port=DB_PORT
-        )
+        conn = psycopg2.connect(dbname=DB_NAME, user=DB_USER, password=DB_PASS, host=DB_HOST, port=DB_PORT)
         return conn
     except psycopg2.OperationalError as e:
-        print(f"ERROR: Could not connect to database during API call: {e}")
         raise HTTPException(status_code=503, detail="Database service is unavailable.")
 
 def process_daily_summary(rows, days):
@@ -121,17 +114,14 @@ def process_daily_summary(rows, days):
     for row in rows:
         day_str = row["day"].strftime("%Y-%m-%d")
         if day_str in summary:
-            if row["status"] == "PASS":
-                summary[day_str]["pass"] = row["count"]
-            elif row["status"] == "FAIL":
-                summary[day_str]["fail"] = row["count"]
+            if row["status"] == "PASS": summary[day_str]["pass"] = row["count"]
+            elif row["status"] == "FAIL": summary[day_str]["fail"] = row["count"]
     return [{"date": day, **counts} for day, counts in summary.items()]
 
 # --- API Endpoints ---
 
 @app.get("/results")
 def get_test_results():
-    """Fetches the latest 100 test results from the database."""
     conn = None
     try:
         conn = get_db_connection()
@@ -140,14 +130,11 @@ def get_test_results():
         results = cursor.fetchall()
         cursor.close()
         return results
-    except Exception as e:
-        raise HTTPException(status_code=500, detail="Failed to fetch test results from database.")
     finally:
         if conn is not None: conn.close()
 
 @app.get("/results/{run_id}")
 def get_run_details(run_id: int):
-    """Fetches all details for a single, specific test run by its primary key ID."""
     conn = None
     try:
         conn = get_db_connection()
@@ -155,13 +142,8 @@ def get_run_details(run_id: int):
         cursor.execute("SELECT * FROM test_results WHERE id = %s;", (run_id,))
         result = cursor.fetchone()
         cursor.close()
-        if not result:
-            raise HTTPException(status_code=404, detail=f"Test run with ID {run_id} not found.")
+        if not result: raise HTTPException(status_code=404, detail=f"Test run with ID {run_id} not found.")
         return result
-    except Exception as e:
-        if not isinstance(e, HTTPException):
-            raise HTTPException(status_code=500, detail="Failed to fetch test run details.")
-        raise e
     finally:
         if conn is not None: conn.close()
 
@@ -181,9 +163,6 @@ def create_initial_run(request: InitialRunRequest):
         conn.commit()
         cursor.close()
         return new_record
-    except Exception as e:
-        print(f"ERROR creating initial record: {e}")
-        raise HTTPException(status_code=500, detail="Failed to create initial record in database.")
     finally:
         if conn is not None: conn.close()
 
@@ -193,27 +172,32 @@ def update_final_run_status(run_id: int, request: FinalStatusRequest):
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        sql = "UPDATE test_results SET status = %s, failure_reason = %s WHERE id = %s RETURNING *;"
-        cursor.execute(sql, (request.status, request.failure_reason, run_id))
+        sql = """
+            UPDATE test_results
+            SET status = %s, visual_status = %s, failure_reason = %s
+            WHERE id = %s
+            RETURNING *;
+        """
+        cursor.execute(sql, (request.status, request.visual_status, request.failure_reason, run_id))
         updated_record = cursor.fetchone()
         conn.commit()
         cursor.close()
 
-        # Broadcast the final, updated record to the frontend ---
         if updated_record:
-            # Convert timestamp to string for JSON serialization
             updated_record['timestamp'] = updated_record['timestamp'].isoformat()
             try:
                 httpx.post(f"{REALTIME_SERVICE_URL}/notify/broadcast", json=updated_record, timeout=5)
                 print(f"  [Notification] Sent final status broadcast for ID: {run_id}")
             except httpx.RequestError as e:
                 print(f"  [Notification] Could not send final status broadcast: {e}")
+        
         return {"status": "success", "message": f"Run {run_id} status updated."}
     except Exception as e:
         print(f"ERROR updating final status for run {run_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to update final status.")
     finally:
-        if conn is not None: conn.close()
+        if conn is not None:
+            conn.close()
 
 @app.get("/stats/kpis")
 def get_kpis(days: int = 7):
