@@ -34,12 +34,17 @@ async def run_agent_journey(journey_request: dict):
 
             # 2. ACT: Execute the planned action (use a tool)
             if action == "discover":
-                current_url = parameters.get("url", current_url)
-                history.append(f"Action: Discovering UI at {current_url}")
+                if i == 0:
+                    discovery_url = target_url
+                else:
+                    discovery_url = parameters.get("url", current_url)
+                
+                history.append(f"Action: Discovering UI at {discovery_url}")
                 async with httpx.AsyncClient() as client:
-                    response = await client.post(settings.DISCOVERY_SERVICE_URL, json={"url": current_url}, timeout=60.0)
+                    response = await client.post(settings.DISCOVERY_SERVICE_URL, json={"url": discovery_url}, timeout=60.0)
                     response.raise_for_status()
                     ui_blueprint = response.json()
+                current_url = discovery_url # Update current URL after discovery
                 history.append(f"Observation: Discovered {len(ui_blueprint.get('elements', []))} elements.")
 
             elif action == "execute_step":
@@ -63,7 +68,7 @@ async def run_agent_journey(journey_request: dict):
                 if execution_result.get("status") == "success":
                     current_url = execution_result.get("new_url", current_url)
                     history.append(f"Observation: Step successful. Now at URL: {current_url}")
-                    # After a successful action, we often need to re-evaluate the UI
+                    # After a successful action, we must re-discover the UI
                     ui_blueprint = None
                 else:
                     reason = execution_result.get("reason", "Unknown execution error.")

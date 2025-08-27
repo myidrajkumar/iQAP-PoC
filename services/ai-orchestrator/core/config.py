@@ -18,16 +18,10 @@ class Settings(BaseSettings):
     GEMINI_MODEL_NAME: str = os.getenv("GEMINI_MODEL_NAME", "")
     GEMINI_TEMPERATURE: float = os.getenv("GEMINI_TEMPERATURE", "0.0")
 
-    # RabbitMQ Configuration (Kept for potential future use, but not for agent flow)
-    RABBITMQ_HOST: str = os.getenv("RABBITMQ_HOST")
-    RABBITMQ_DEFAULT_USER: str = os.getenv("RABBITMQ_DEFAULT_USER")
-    RABBITMQ_DEFAULT_PASS: os.getenv("RABBITMQ_DEFAULT_PASS")
-    RABBITMQ_QUEUE: str = "test_generation_queue"
-
     # Service URLs
     DISCOVERY_SERVICE_URL: str = os.getenv("DISCOVERY_SERVICE_URL")
-    EXECUTION_AGENT_URL: str = os.getenv("EXECUTION_AGENT_URL") # NEW
-    REPORTING_SERVICE_URL: str = os.getenv("REPORTING_SERVICE_URL") # NEW
+    EXECUTION_AGENT_URL: str = os.getenv("EXECUTION_AGENT_URL")
+    REPORTING_SERVICE_URL: str = os.getenv("REPORTING_SERVICE_URL")
 
     # CORS Configuration
     ALLOWED_ORIGINS: list[str] = ["http://localhost:3000"]
@@ -47,6 +41,5 @@ settings = Settings()
 # Dynamically adjust service URLs if running in Docker
 if settings.IS_DOCKER:
     settings.DISCOVERY_SERVICE_URL = "http://discovery-service:8001/discover"
-    settings.EXECUTION_AGENT_URL = "http://execution-agent:8004/execute-step" # NEW
-    settings.REPORTING_SERVICE_URL = "http://reporting-service:8002" # NEW
-    settings.RABBITMQ_HOST = "iqap-rabbitmq"
+    settings.EXECUTION_AGENT_URL = "http://execution-agent:8004/execute-step"
+    settings.REPORTING_SERVICE_URL = "http://reporting-service:8002"

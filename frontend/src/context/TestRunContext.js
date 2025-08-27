@@ -40,20 +40,19 @@ export const TestRunProvider = ({ children }) => {
 
         socket.onmessage = (event) => {
             const message = JSON.parse(event.data);
-            
-            if (message.objective) { // A new run object
-                console.log("Received new run notification:", message);
-                setResults(prevResults => [message, ...prevResults.filter(r => r.id !== message.id)]);
-            } else if (message.id) { // A final status update
-                console.log("Received final status update:", message);
-                setResults(prevResults => 
-                    prevResults.map(run =>
-                        run.id === message.id
-                            ? { ...run, status: message.status, failure_reason: message.failure_reason }
-                            : run
-                    )
-                );
-            }
+            console.log("Received broadcast message:", message);
+
+            setResults(prevResults => {
+                const existingRunIndex = prevResults.findIndex(r => r.id === message.id);
+                
+                if (existingRunIndex !== -1) {
+                    const updatedResults = [...prevResults];
+                    updatedResults[existingRunIndex] = message;
+                    return updatedResults;
+                } else {
+                    return [message, ...prevResults];
+                }
+            });
         };
 
         return () => socket.close();
@@ -73,7 +72,6 @@ export const TestRunProvider = ({ children }) => {
                     data: { "Username": "standard_user", "Password": "secret_sauce" }
                 }]
             };
-            // The API call returns the initial 'RUNNING' record, which is added via WebSocket
             await axios.post(`${orchestratorApiUrl}/api/v1/start-test-journey`, payload);
             
             setStatusMessage('Agent has started the journey. See history for live updates.');
@@ -93,7 +91,7 @@ export const TestRunProvider = ({ children }) => {
         error,
         statusMessage,
         fetchResults,
-        startTestJourney, // The new unified function
+        startTestJourney,
     };
 
     return (

@@ -1,6 +1,8 @@
 import os
 import psycopg2
 import asyncio
+import json
+import httpx
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,16 +10,21 @@ from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
 from collections import defaultdict
 from datetime import date, timedelta
+from pydantic import BaseModel
+from typing import List, Dict, Any, Optional
 
 load_dotenv()
 
-# --- Database Connection Details (from environment variables) ---
+# --- Configurations ---
 is_docker = os.environ.get("DOCKER_ENV") == "true"
 
 if is_docker:
     DB_HOST = "iqap-postgres"
+    REALTIME_SERVICE_URL = "http://realtime-service:8003"
 else:
     DB_HOST = os.getenv("POSTGRES_HOST", "localhost")
+    REALTIME_SERVICE_URL = os.getenv("REALTIME_SERVICE_URL", "http://localhost:8003")
+
 DB_NAME = os.getenv("POSTGRES_DB")
 DB_USER = os.getenv("POSTGRES_USER")
 DB_PASS = os.getenv("POSTGRES_PASSWORD")
@@ -36,8 +43,6 @@ async def lifespan(app: FastAPI):
             )
             print("Reporting Service: Successfully connected to PostgreSQL.")
             cursor = conn.cursor()
-
-            # Create table with schema if it doesn't exist
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS test_results (
@@ -51,28 +56,28 @@ async def lifespan(app: FastAPI):
                     artifacts_path VARCHAR(255),
                     visual_artifacts JSONB
                 );
-            """
+                """
             )
-
+            cursor.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name='test_results' AND column_name='visual_artifacts'"
+            )
+            if cursor.fetchone() is None:
+                cursor.execute(
+                    "ALTER TABLE test_results ADD COLUMN visual_artifacts JSONB;"
+                )
             conn.commit()
             cursor.close()
             print("Reporting Service: Database table 'test_results' is ready.")
             break
-
         except psycopg2.OperationalError:
-            print(
-                "Reporting Service: PostgreSQL not ready yet. Waiting 5 seconds to retry..."
-            )
+            print("Reporting Service: PostgreSQL not ready yet. Waiting 5 seconds to retry...")
             await asyncio.sleep(5)
         except Exception as e:
-            print(
-                f"CRITICAL ERROR during startup: Could not initialize database table. {e}"
-            )
+            print(f"CRITICAL ERROR during startup: Could not initialize database table. {e}")
             await asyncio.sleep(5)
         finally:
             if conn is not None:
                 conn.close()
-
     yield
     print("Reporting Service: Lifespan shutdown event...")
 
@@ -87,7 +92,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- Pydantic Models ---
+class InitialRunRequest(BaseModel):
+    objective: str
+    test_case_id: str
+    parameters: Optional[List[Dict[str, Any]]] = None
 
+class FinalStatusRequest(BaseModel):
+    status: str
+    failure_reason: Optional[str] = None
+
+# --- Helper Functions ---
 def get_db_connection():
     """Establishes and returns a database connection for API calls."""
     try:
@@ -99,6 +114,20 @@ def get_db_connection():
         print(f"ERROR: Could not connect to database during API call: {e}")
         raise HTTPException(status_code=503, detail="Database service is unavailable.")
 
+def process_daily_summary(rows, days):
+    today = date.today()
+    date_range = [today - timedelta(days=i) for i in range(days - 1, -1, -1)]
+    summary = {dt.strftime("%Y-%m-%d"): {"pass": 0, "fail": 0} for dt in date_range}
+    for row in rows:
+        day_str = row["day"].strftime("%Y-%m-%d")
+        if day_str in summary:
+            if row["status"] == "PASS":
+                summary[day_str]["pass"] = row["count"]
+            elif row["status"] == "FAIL":
+                summary[day_str]["fail"] = row["count"]
+    return [{"date": day, **counts} for day, counts in summary.items()]
+
+# --- API Endpoints ---
 
 @app.get("/results")
 def get_test_results():
@@ -107,23 +136,15 @@ def get_test_results():
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        cursor.execute(
-            "SELECT id, objective, status, visual_status, timestamp FROM test_results ORDER BY timestamp DESC LIMIT 100;"
-        )
+        cursor.execute("SELECT id, objective, status, visual_status, timestamp FROM test_results ORDER BY timestamp DESC LIMIT 100;")
         results = cursor.fetchall()
         cursor.close()
         return results
     except Exception as e:
-        print(f"ERROR fetching results: {e}")
-        raise HTTPException(
-            status_code=500, detail="Failed to fetch test results from database."
-        )
+        raise HTTPException(status_code=500, detail="Failed to fetch test results from database.")
     finally:
-        if conn is not None:
-            conn.close()
+        if conn is not None: conn.close()
 
-
-# This endpoint is now more important than ever for the details page
 @app.get("/results/{run_id}")
 def get_run_details(run_id: int):
     """Fetches all details for a single, specific test run by its primary key ID."""
@@ -134,46 +155,66 @@ def get_run_details(run_id: int):
         cursor.execute("SELECT * FROM test_results WHERE id = %s;", (run_id,))
         result = cursor.fetchone()
         cursor.close()
-
         if not result:
-            raise HTTPException(
-                status_code=404, detail=f"Test run with ID {run_id} not found."
-            )
-
+            raise HTTPException(status_code=404, detail=f"Test run with ID {run_id} not found.")
         return result
     except Exception as e:
         if not isinstance(e, HTTPException):
-            print(f"ERROR fetching result for ID {run_id}: {e}")
-            raise HTTPException(
-                status_code=500, detail="Failed to fetch test run details."
-            )
+            raise HTTPException(status_code=500, detail="Failed to fetch test run details.")
         raise e
     finally:
-        if conn is not None:
-            conn.close()
+        if conn is not None: conn.close()
 
+@app.post("/results", status_code=201)
+def create_initial_run(request: InitialRunRequest):
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        objective = request.objective
+        if request.parameters:
+            dataset_name = request.parameters[0].get("dataset_name", "default")
+            objective += f" ({dataset_name})"
+        sql = "INSERT INTO test_results (objective, test_case_id, status, visual_status) VALUES (%s, %s, 'RUNNING', 'N/A') RETURNING *;"
+        cursor.execute(sql, (objective, request.test_case_id))
+        new_record = cursor.fetchone()
+        conn.commit()
+        cursor.close()
+        return new_record
+    except Exception as e:
+        print(f"ERROR creating initial record: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create initial record in database.")
+    finally:
+        if conn is not None: conn.close()
 
-def process_daily_summary(rows, days):
-    # Create a dictionary to hold results for each day in the range
-    today = date.today()
-    date_range = [today - timedelta(days=i) for i in range(days - 1, -1, -1)]
+@app.put("/results/{run_id}/final-status")
+def update_final_run_status(run_id: int, request: FinalStatusRequest):
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        sql = "UPDATE test_results SET status = %s, failure_reason = %s WHERE id = %s RETURNING *;"
+        cursor.execute(sql, (request.status, request.failure_reason, run_id))
+        updated_record = cursor.fetchone()
+        conn.commit()
+        cursor.close()
 
-    # Use defaultdict to easily handle days with no test runs
-    summary = {dt.strftime("%Y-%m-%d"): {"pass": 0, "fail": 0} for dt in date_range}
+        # Broadcast the final, updated record to the frontend ---
+        if updated_record:
+            # Convert timestamp to string for JSON serialization
+            updated_record['timestamp'] = updated_record['timestamp'].isoformat()
+            try:
+                httpx.post(f"{REALTIME_SERVICE_URL}/notify/broadcast", json=updated_record, timeout=5)
+                print(f"  [Notification] Sent final status broadcast for ID: {run_id}")
+            except httpx.RequestError as e:
+                print(f"  [Notification] Could not send final status broadcast: {e}")
+        return {"status": "success", "message": f"Run {run_id} status updated."}
+    except Exception as e:
+        print(f"ERROR updating final status for run {run_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update final status.")
+    finally:
+        if conn is not None: conn.close()
 
-    for row in rows:
-        day_str = row["day"].strftime("%Y-%m-%d")
-        if day_str in summary:
-            if row["status"] == "PASS":
-                summary[day_str]["pass"] = row["count"]
-            elif row["status"] == "FAIL":
-                summary[day_str]["fail"] = row["count"]
-
-    # Convert the dictionary to the list format the frontend expects
-    return [{"date": day, **counts} for day, counts in summary.items()]
-
-
-# --- NEW ENDPOINT: /stats/kpis ---
 @app.get("/stats/kpis")
 def get_kpis(days: int = 7):
     """Calculates and returns key performance indicators for a given period."""
@@ -181,8 +222,6 @@ def get_kpis(days: int = 7):
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-
-        # SQL query to get total runs and passed runs in one go
         query = """
             SELECT
                 COUNT(*) AS total_runs,
@@ -192,23 +231,16 @@ def get_kpis(days: int = 7):
         """
         cursor.execute(query, (days,))
         data = cursor.fetchone()
-
         total_runs = data["total_runs"] or 0
         passed_runs = data["passed_runs"] or 0
-
         pass_rate = (passed_runs / total_runs * 100) if total_runs > 0 else 0
-
         return {"total_runs": total_runs, "pass_rate": round(pass_rate, 1)}
-
     except Exception as e:
         print(f"ERROR fetching KPIs: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch KPIs.")
     finally:
-        if conn is not None:
-            conn.close()
+        if conn is not None: conn.close()
 
-
-# --- NEW ENDPOINT: /stats/daily_summary ---
 @app.get("/stats/daily_summary")
 def get_daily_summary(days: int = 7):
     """Returns a daily breakdown of pass/fail counts for a given period."""
@@ -216,8 +248,6 @@ def get_daily_summary(days: int = 7):
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-
-        # SQL query to group by date and status
         query = """
             SELECT
                 DATE(timestamp) AS day,
@@ -231,18 +261,13 @@ def get_daily_summary(days: int = 7):
         """
         cursor.execute(query, (days,))
         rows = cursor.fetchall()
-
-        # Use the helper to format the data perfectly for the chart
         summary = process_daily_summary(rows, days)
         return summary
-
     except Exception as e:
         print(f"ERROR fetching daily summary: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch daily summary.")
     finally:
-        if conn is not None:
-            conn.close()
-
+        if conn is not None: conn.close()
 
 @app.get("/")
 def read_root():

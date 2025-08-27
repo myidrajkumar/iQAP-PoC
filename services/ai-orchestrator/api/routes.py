@@ -21,11 +21,15 @@ async def start_test_journey_endpoint(
     
     # 1. Create the initial 'RUNNING' record in the reporting service
     try:
+        # Convert Pydantic models to a JSON-serializable list of dictionaries
+        parameters_dict = [p.model_dump() for p in request.parameters] if request.parameters else None
+        
         initial_payload = {
             "objective": request.objective,
-            "test_case_id": "AGENTIC_RUN", # Generic ID for agent runs
-            "parameters": request.parameters
+            "test_case_id": "AGENTIC_RUN",
+            "parameters": parameters_dict # Use the converted dictionary
         }
+        
         async with httpx.AsyncClient() as client:
             response = await client.post(f"{settings.REPORTING_SERVICE_URL}/results", json=initial_payload)
             response.raise_for_status()
