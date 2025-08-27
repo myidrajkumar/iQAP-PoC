@@ -6,12 +6,12 @@ import DashboardPage from './pages/DashboardPage';
 import TestResultDetailPage from './pages/TestResultDetailPage';
 import AuthoringPage from './pages/AuthoringPage';
 import TestRunsPage from './pages/TestRunsPage';
-import { TestRunProvider } from './context/TestRunContext'; // <-- NEW IMPORT
+import LiveViewPage from './pages/LiveViewPage';
+import { TestRunProvider } from './context/TestRunContext';
 import './App.css';
 
 function App() {
   return (
-    // The Provider now wraps the entire layout, making state global
     <TestRunProvider>
       <div className="app-layout">
         <Sidebar />
@@ -23,6 +23,7 @@ function App() {
               <Route path="/author" element={<AuthoringPage />} />
               <Route path="/runs" element={<TestRunsPage />} />
               <Route path="/results/:runId" element={<TestResultDetailPage />} />
+              <Route path="/runs/:runId/live" element={<LiveViewPage />} />
             </Routes>
           </main>
         </div>

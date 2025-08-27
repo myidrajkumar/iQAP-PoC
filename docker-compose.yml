@@ -10,9 +10,11 @@ services:
     environment:
       - REACT_APP_API_URL=http://localhost:8000
       - REACT_APP_REPORTING_URL=http://localhost:8002
+      - REACT_APP_WEBSOCKET_URL=ws://localhost:8003
     depends_on:
       - ai-orchestrator
       - reporting-service
+      - realtime-service
 
   # --- Backend Services ---
   ai-orchestrator:
@@ -40,6 +42,14 @@ services:
       - PYTHONUNBUFFERED=1
       - DOCKER_ENV=true
 
+  realtime-service:
+    container_name: realtime-service
+    build: ./services/realtime-service
+    ports:
+      - "8003:8003"
+    environment:
+      - PYTHONUNBUFFERED=1
+
   execution-orchestrator:
     container_name: execution-orchestrator
     build: ./services/execution-orchestrator
@@ -62,6 +72,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - DOCKER_ENV=true
+      - REALTIME_SERVICE_URL=http://realtime-service:8003
     depends_on:
       - execution-orchestrator
       - postgres

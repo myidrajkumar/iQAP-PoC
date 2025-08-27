@@ -1,5 +1,5 @@
 import React from 'react';
-import { useTestRun } from '../context/TestRunContext'; // <-- Use the new context hook
+import { useTestRun } from '../context/TestRunContext';
 import TestForm from '../components/TestForm';
 import TestCaseEditor from '../components/TestCaseEditor';
 import './AuthoringPage.css';
@@ -14,7 +14,7 @@ function AuthoringPage() {
     generateTest,
     runTest,
     setTestCase,
-  } = useTestRun(); // <-- Use the new context hook
+  } = useTestRun();
 
   return (
     <div className="authoring-container">
@@ -26,7 +26,7 @@ function AuthoringPage() {
           <TestCaseEditor
             testCase={testCase}
             isExecuting={isExecuting}
-            onRunTest={runTest} // Pass runTest directly
+            onRunTest={runTest}
             onGoBack={() => setTestCase(null)}
           />
         ) : (

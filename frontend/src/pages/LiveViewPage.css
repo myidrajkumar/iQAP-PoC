@@ -1,0 +1,77 @@
+.live-view-container {
+    background-color: #fff;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+}
+.live-view-header {
+    border-bottom: 2px solid #eee;
+    padding-bottom: 1rem;
+    margin-bottom: 1rem;
+}
+.live-view-header h1 {
+    margin-top: 0;
+}
+.live-overall-status {
+    font-size: 1.2rem;
+}
+.live-overall-status .status-badge {
+    margin-left: 10px;
+    font-size: 1rem;
+}
+.live-failure-reason {
+    background-color: #f8d7da;
+    color: #721c24;
+    border: 1px solid #f5c6cb;
+    padding: 15px;
+    border-radius: 4px;
+    margin-bottom: 1rem;
+}
+.steps-wrapper {
+    margin-top: 20px;
+    font-family: 'Courier New', Courier, monospace;
+}
+.live-step {
+    display: grid;
+    grid-template-columns: 40px 1fr 100px;
+    align-items: center;
+    gap: 1rem;
+    padding: 10px;
+    border-radius: 4px;
+    margin-bottom: 8px;
+    transition: all 0.3s ease-in-out;
+    border: 1px solid #eee;
+}
+.live-step.pending {
+    background-color: #f8f9fa;
+    color: #6c757d;
+}
+.live-step.running {
+    background-color: #fffbeb;
+    border-color: #ffc107;
+}
+.live-step.pass {
+    background-color: #d4edda;
+    border-color: #28a745;
+}
+.live-step-number {
+    font-weight: bold;
+    text-align: center;
+}
+.live-step-action {
+    font-weight: bold;
+}
+.live-step-status {
+    font-weight: bold;
+    text-align: right;
+}
+.back-to-runs-btn {
+    display: inline-block;
+    margin-top: 1.5rem;
+    padding: 10px 20px;
+    background-color: #007bff;
+    color: #fff;
+    text-decoration: none;
+    border-radius: 4px;
+    font-weight: 600;
+}

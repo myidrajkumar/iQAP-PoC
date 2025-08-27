@@ -21,15 +21,10 @@ export const TestRunProvider = ({ children }) => {
     const [error, setError] = useState('');
     const [statusMessage, setStatusMessage] = useState('');
     const [testCase, setTestCase] = useState(null);
-    const pollingRef = useRef(null);
+    const [isPolling, setIsPolling] = useState(false);
+    const pollingAttemptsRef = useRef(0);
+    const pollingIntervalRef = useRef(null);
     const navigate = useNavigate();
-
-    const stopPolling = () => {
-        if (pollingRef.current) {
-            clearInterval(pollingRef.current);
-            console.log("Polling stopped.");
-        }
-    };
 
     const fetchResults = useCallback(async () => {
         try {
@@ -43,23 +38,35 @@ export const TestRunProvider = ({ children }) => {
         }
     }, []);
 
-    const startPolling = useCallback(() => {
-        stopPolling(); // Ensure no multiple polls are running
-        let attempts = 0;
-        pollingRef.current = setInterval(async () => {
-            console.log(`Polling for results... Attempt ${attempts + 1}`);
-            const currentResults = await fetchResults();
-            attempts++;
-            const isStillRunning = currentResults?.some(r => r.status === 'RUNNING');
-            if (!isStillRunning || attempts >= POLLING_ATTEMPTS) {
-                stopPolling();
+    useEffect(() => {
+        if (isPolling) {
+            pollingAttemptsRef.current = 0;
+            pollingIntervalRef.current = setInterval(async () => {
+                console.log(`Polling... Attempt ${pollingAttemptsRef.current + 1}`);
+                const currentResults = await fetchResults();
+                pollingAttemptsRef.current++;
+
+                const isStillRunning = currentResults?.some(r => r.status === 'RUNNING');
+
+                if (!isStillRunning || pollingAttemptsRef.current >= POLLING_ATTEMPTS) {
+                    setIsPolling(false);
+                }
+            }, POLLING_INTERVAL);
+        } else {
+            if (pollingIntervalRef.current) {
+                clearInterval(pollingIntervalRef.current);
+                console.log("Polling stopped.");
             }
-        }, POLLING_INTERVAL);
-    }, [fetchResults]);
+        }
+        return () => {
+            if (pollingIntervalRef.current) {
+                clearInterval(pollingIntervalRef.current);
+            }
+        };
+    }, [isPolling, fetchResults]);
 
     useEffect(() => {
-        fetchResults(); // Initial fetch on load
-        return stopPolling; // Cleanup on unmount
+        fetchResults();
     }, [fetchResults]);
 
     const generateTest = async (requirement, targetUrl) => {
@@ -71,7 +78,8 @@ export const TestRunProvider = ({ children }) => {
             const response = await axios.post(`${orchestratorApiUrl}/api/v1/generate-test-case`, { requirement, target_url: targetUrl });
             setTestCase(response.data);
             setStatusMessage('');
-        } catch (err) {
+        } catch (err)
+        {
             setError(err.response?.data?.detail || "Failed to generate test case.");
             setStatusMessage('');
         } finally {
@@ -85,14 +93,18 @@ export const TestRunProvider = ({ children }) => {
         setStatusMessage('Publishing job for execution...');
         try {
             const payload = { ...testCaseToRun, is_live_view: isLiveView };
-            await axios.post(`${orchestratorApiUrl}/api/v1/publish-test-case`, payload);
+            const response = await axios.post(`${orchestratorApiUrl}/api/v1/publish-test-case`, payload);
+            const newRunId = response.data.run_id;
             
             setStatusMessage('Job published successfully!');
             setTestCase(null);
             
-            navigate('/runs');
-            // Give the backend a moment to create the "RUNNING" record
-            setTimeout(startPolling, 500);
+            if (isLiveView) {
+                navigate(`/runs/${newRunId}/live`);
+            } else {
+                navigate('/runs');
+                setTimeout(() => setIsPolling(true), 500);
+            }
             
         } catch (err) {
             setError(err.response?.data?.detail || "Failed to publish job.");

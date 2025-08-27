@@ -18,7 +18,7 @@ const TestForm = ({ isLoading, error, statusMessage, onGenerate }) => {
         <label htmlFor="requirement-input">Business Requirement:</label>
         <textarea id="requirement-input" value={requirement} onChange={(e) => setRequirement(e.target.value)} rows="4" />
         <button type="submit" disabled={isLoading}>
-          {isLoading ? 'Processing...' : 'Generate & Run Test'}
+          {isLoading ? 'Processing...' : 'Generate Test Case'}
         </button>
       </form>
       {statusMessage && <div className="status">{statusMessage}</div>}

@@ -11,3 +11,5 @@ venv
 
 # Node modules
 node_modules
+
+logs/

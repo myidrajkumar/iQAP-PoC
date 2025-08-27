@@ -6,3 +6,4 @@ pydantic_settings
 pika
 google-generativeai
 httpx
+psycopg2-binary

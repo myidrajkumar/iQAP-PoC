@@ -9,6 +9,7 @@ import psycopg2
 from playwright.sync_api import sync_playwright, expect, Error as PlaywrightError
 import io
 import re
+import httpx
 
 load_dotenv()
 
@@ -19,10 +20,14 @@ if is_docker:
     DB_HOST = "iqap-postgres"
     RABBITMQ_HOST = "iqap-rabbitmq"
     MINIO_HOST = "minio:9000"
+    REALTIME_SERVICE_URL = os.getenv(
+        "REALTIME_SERVICE_URL", "http://realtime-service:8003"
+    )
 else:
     DB_HOST = os.getenv("POSTGRES_HOST", "localhost")
     RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "localhost")
     MINIO_HOST = "localhost:9000"
+    REALTIME_SERVICE_URL = os.getenv("REALTIME_SERVICE_URL", "http://localhost:8003")
 
 RABBITMQ_USER = os.getenv("RABBITMQ_DEFAULT_USER", "rabbit_user")
 RABBITMQ_PASS = os.getenv("RABBITMQ_DEFAULT_PASS", "rabbit_password")
@@ -49,6 +54,15 @@ except Exception as e:
     minio_client = None
 
 
+def send_realtime_update(run_id: int, update: dict):
+    if not run_id:
+        return
+    try:
+        httpx.post(f"{REALTIME_SERVICE_URL}/update/{run_id}", json=update, timeout=5)
+    except httpx.RequestError as e:
+        print(f"  [Realtime] Could not send update for run {run_id}: {e}")
+
+
 def update_result_in_db(
     db_run_id: int,
     status: str,
@@ -56,11 +70,9 @@ def update_result_in_db(
     failure_reason: str = None,
     artifacts_path: str = None,
 ):
-    """Connects to PostgreSQL and UPDATES a test result with the final details."""
     if not db_run_id:
         print("  [DB] Error: No db_run_id provided. Cannot update final result.")
         return
-
     conn = None
     try:
         conn = psycopg2.connect(
@@ -98,11 +110,7 @@ def handle_visual_test(page, test_case_id: str, step_name: str, artifacts_path: 
         )
         baseline_bytes = baseline_response.read()
 
-        expect(page).to_have_screenshot(
-            baseline_bytes,
-            threshold=0.2,
-            full_page=True,  # This is a key parameter for stability
-        )
+        expect(page).to_have_screenshot(baseline_bytes, threshold=0.2, full_page=True)
         print(f"  [VISUAL] PASS: Images match for '{step_name}'.")
         return "PASS", f"Visual check passed for {step_name}"
 
@@ -172,6 +180,17 @@ def run_test_case(test_case_json: dict):
     test_case_id_base = test_case_json.get("test_case_id")
     ui_blueprint = test_case_json.get("ui_blueprint", [])
     target_url = test_case_json.get("target_url", "https://www.saucedemo.com")
+    db_run_id = test_case_json.get("db_run_id")
+
+    # Send initial start message
+    send_realtime_update(
+        db_run_id,
+        {
+            "type": "run_start",
+            "message": "Test execution started.",
+            "steps": test_case_json.get("steps", []),
+        },
+    )
 
     for params in parameter_sets:
         dataset_name = params.get("dataset_name", "default")
@@ -192,12 +211,10 @@ def run_test_case(test_case_json: dict):
             try:
                 is_live_view = test_case_json.get("is_live_view", False)
                 is_headful_run = not is_docker and is_live_view
-
                 launch_options = {
                     "headless": not is_headful_run,
                     "slow_mo": 500 if is_headful_run else 0,
                 }
-
                 if is_docker:
                     launch_options["args"] = [
                         "--no-sandbox",
@@ -209,17 +226,25 @@ def run_test_case(test_case_json: dict):
                 context = browser.new_context()
                 context.tracing.start(screenshots=True, snapshots=True, sources=True)
                 page = context.new_page()
-
                 page.set_viewport_size({"width": 1920, "height": 1080})
-
                 page.goto(target_url, timeout=60000)
 
                 for step in test_case_json.get("steps", []):
                     action = step.get("action")
                     target_name = step.get("target_element")
+                    data_key = step.get("data_key")
+                    data_to_use = dataset.get(data_key, "") if data_key else ""
 
                     print(
                         f"Executing Step {step.get('step')}: {action} on '{target_name}'"
+                    )
+                    send_realtime_update(
+                        db_run_id,
+                        {
+                            "type": "step_result",
+                            "step": step.get("step"),
+                            "status": "RUNNING",
+                        },
                     )
 
                     if action == "VISUAL_VALIDATION":
@@ -227,11 +252,9 @@ def run_test_case(test_case_json: dict):
                         step_visual_status, step_visual_message = handle_visual_test(
                             page, run_id, target_name, artifacts_path
                         )
-
                         if step_visual_status == "FAIL":
                             visual_status = "FAIL"
                             raise PlaywrightError(step_visual_message)
-
                         if visual_status != "FAIL":
                             visual_status = step_visual_status
                     else:
@@ -239,33 +262,48 @@ def run_test_case(test_case_json: dict):
                             page, target_name, ui_blueprint
                         )
                         expect(element_locator).to_be_visible(timeout=10000)
-
                         if action == "ENTER_TEXT":
-                            data_key = step.get("data_key")
-                            data_to_use = dataset.get(data_key, "") if data_key else ""
                             element_locator.fill(data_to_use)
                         elif action == "CLICK":
                             element_locator.click()
                         elif action == "VERIFY_ELEMENT_VISIBLE":
                             expect(element_locator).to_be_visible()
 
-                        print(f"  [SUCCESS] Action successful.")
+                    print(
+                        f"  [SUCCESS] Action '{action}' on '{target_name}' successful."
+                    )
+                    send_realtime_update(
+                        db_run_id,
+                        {
+                            "type": "step_result",
+                            "step": step.get("step"),
+                            "status": "PASS",
+                        },
+                    )
 
-                status = "PASS"
-                if visual_status == "N/A":
-                    visual_status = "PASS"
+                if visual_status in ["PASS", "BASELINE_CREATED", "N/A"]:
+                    status = "PASS"
+                    if visual_status == "N/A":
+                        visual_status = "PASS"
+                else:
+                    status = "FAIL"
+                    failure_reason = (
+                        "Visual test failed. Screenshot did not match the baseline."
+                    )
 
             except Exception as e:
                 print(f"[FAIL] Test run finished with an error: {e}")
                 status = "FAIL"
-                # If a visual test has already failed, don't overwrite its specific message
-                if not failure_reason:
-                    failure_reason = re.sub(r"\s+", " ", str(e).splitlines()[0])
+                failure_reason = re.sub(r"\s+", " ", str(e).splitlines()[0])
+                send_realtime_update(
+                    db_run_id,
+                    {"type": "run_end", "status": "FAIL", "reason": failure_reason},
+                )
 
                 if "page" in locals() and page and minio_client:
                     try:
                         screenshot_path = f"{artifacts_path}/failure.png"
-                        screenshot_bytes = page.screenshot(full_page=True)
+                        screenshot_bytes = page.screenshot()
                         minio_client.put_object(
                             ARTIFACTS_BUCKET_NAME,
                             screenshot_path,
@@ -295,9 +333,13 @@ def run_test_case(test_case_json: dict):
                             f"  [ERROR] Could not save failure artifacts: {artifact_error}"
                         )
 
-        print(f"--- Test Run Finished with Status: {status} ---")
+        if status == "PASS":
+            send_realtime_update(
+                db_run_id,
+                {"type": "run_end", "status": "PASS", "visual_status": visual_status},
+            )
 
-        db_run_id = test_case_json.get("db_run_id")
+        print(f"--- Test Run Finished with Status: {status} ---")
         update_result_in_db(
             db_run_id=db_run_id,
             status=status,
