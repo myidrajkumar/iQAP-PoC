@@ -66,6 +66,13 @@ def send_realtime_update(run_id: int, update: dict):
     except httpx.RequestError as e:
         print(f"  [Realtime] Could not send update for run {run_id}: {e}")
 
+def send_final_status_broadcast(update_payload: dict):
+    try:
+        httpx.post(f"{REALTIME_SERVICE_URL}/notify/broadcast", json=update_payload, timeout=5)
+        print(f"  [Notification] Sent final status broadcast for ID: {update_payload.get('id')}")
+    except httpx.RequestError as e:
+        print(f"  [Notification] Could not send final status broadcast: {e}")
+
 
 def update_result_in_db(
     db_run_id: int,
@@ -139,8 +146,8 @@ def find_element_locator(page, target_name: str, ui_blueprint: list):
             f"  [Locator] Using placeholder selector: '{element_data['placeholder']}'"
         )
         return page.get_by_placeholder(element_data["placeholder"], exact=True)
-
     raise ValueError(f"Could not determine a stable locator for '{target_name}'.")
+
 
 
 def run_test_case(test_case_json: dict):
@@ -156,14 +163,11 @@ def run_test_case(test_case_json: dict):
     db_run_id = test_case_json.get("db_run_id")
     is_live_view = test_case_json.get("is_live_view", False)
 
-    send_realtime_update(
-        db_run_id,
-        {
-            "type": "run_start",
-            "message": "Test execution started.",
-            "steps": test_case_json.get("steps", []),
-        },
-    )
+    if is_live_view:
+        send_realtime_update(
+            db_run_id,
+            {"type": "run_start", "message": "Test execution started.", "steps": test_case_json.get("steps", [])},
+        )
 
     for params in parameter_sets:
         dataset_name = params.get("dataset_name", "default")
@@ -189,12 +193,7 @@ def run_test_case(test_case_json: dict):
                     "slow_mo": 0,
                 }
                 if is_docker:
-                    launch_options["args"] = [
-                        "--no-sandbox",
-                        "--disable-setuid-sandbox",
-                        "--disable-dev-shm-usage",
-                    ]
-
+                    launch_options["args"] = ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
                 browser = p.chromium.launch(**launch_options)
                 context = browser.new_context()
                 context.tracing.start(screenshots=True, snapshots=True, sources=True)
@@ -208,17 +207,8 @@ def run_test_case(test_case_json: dict):
                     data_key = step.get("data_key")
                     data_to_use = dataset.get(data_key, "") if data_key else ""
 
-                    print(
-                        f"Executing Step {step.get('step')}: {action} on '{target_name}'"
-                    )
-                    send_realtime_update(
-                        db_run_id,
-                        {
-                            "type": "step_result",
-                            "step": step.get("step"),
-                            "status": "RUNNING",
-                        },
-                    )
+                    if is_live_view:
+                        send_realtime_update(db_run_id, {"type": "step_result", "step": step.get("step"), "status": "RUNNING"})
 
                     if action == "VISUAL_VALIDATION":
                         page.wait_for_load_state("networkidle", timeout=10000)
@@ -227,147 +217,74 @@ def run_test_case(test_case_json: dict):
                         current_screenshot_path = f"debug/current_{timestamp_slug}.png"
                         
                         try:
-                            minio_client.fget_object(
-                                ARTIFACTS_BUCKET_NAME,
-                                baseline_object_name,
-                                temp_baseline_path,
-                            )
-                            print(
-                                f"  [VISUAL] Baseline found for '{target_name}'. Comparing..."
-                            )
+                            minio_client.fget_object(ARTIFACTS_BUCKET_NAME, baseline_object_name, temp_baseline_path)
                             page.screenshot(path=current_screenshot_path, full_page=True)
-
                             if not filecmp.cmp(temp_baseline_path, current_screenshot_path, shallow=False):
-                                print("  [VISUAL] Mismatch detected.")
                                 visual_status = "FAIL"
-                                
                                 failure_artifact_name = f"visual_failure_step_{step.get('step')}_{target_name}.png"
                                 failure_artifact_path = f"{artifacts_path}/{failure_artifact_name}"
-                                
-                                minio_client.fput_object(
-                                    ARTIFACTS_BUCKET_NAME,
-                                    failure_artifact_path,
-                                    current_screenshot_path,
-                                )
+                                minio_client.fput_object(ARTIFACTS_BUCKET_NAME, failure_artifact_path, current_screenshot_path)
                                 visual_failures_list.append(failure_artifact_name)
-                                print(f"  [VISUAL] Uploaded failed screenshot to {failure_artifact_path}")
-
                             else:
-                                print("  [VISUAL] Screenshots match.")
-                                if visual_status != "FAIL":
-                                    visual_status = "PASS"
-                        
+                                if visual_status != "FAIL": visual_status = "PASS"
                         except S3Error as exc:
                             if exc.code == "NoSuchKey":
-                                print(
-                                    f"  [VISUAL] No baseline found for '{target_name}'. Creating new one."
-                                )
                                 new_baseline_bytes = page.screenshot(full_page=True)
-                                minio_client.put_object(
-                                    ARTIFACTS_BUCKET_NAME,
-                                    baseline_object_name,
-                                    io.BytesIO(new_baseline_bytes),
-                                    len(new_baseline_bytes),
-                                    content_type='image/png'
-                                )
-                                print(f"  [VISUAL] New baseline uploaded to {baseline_object_name}")
-                                if visual_status != "FAIL":
-                                    visual_status = "BASELINE_CREATED"
-                            else:
-                                raise
+                                minio_client.put_object(ARTIFACTS_BUCKET_NAME, baseline_object_name, io.BytesIO(new_baseline_bytes), len(new_baseline_bytes), content_type='image/png')
+                                if visual_status != "FAIL": visual_status = "BASELINE_CREATED"
+                            else: raise
                         finally:
                             if os.path.exists(temp_baseline_path): os.remove(temp_baseline_path)
                             if os.path.exists(current_screenshot_path): os.remove(current_screenshot_path)
                     
                     else:
-                        element_locator = find_element_locator(
-                            page, target_name, ui_blueprint
-                        )
+                        element_locator = find_element_locator(page, target_name, ui_blueprint)
                         expect(element_locator).to_be_visible(timeout=10000)
-                        if action == "ENTER_TEXT":
-                            element_locator.fill(data_to_use)
-                        elif action == "CLICK":
-                            element_locator.click()
-                            page.wait_for_load_state("domcontentloaded")
-                        elif action == "VERIFY_ELEMENT_VISIBLE":
-                            expect(element_locator).to_be_visible()
+                        if action == "ENTER_TEXT": element_locator.fill(data_to_use)
+                        elif action == "CLICK": element_locator.click(); page.wait_for_load_state("domcontentloaded")
+                        elif action == "VERIFY_ELEMENT_VISIBLE": expect(element_locator).to_be_visible()
 
-                    print(
-                        f"  [SUCCESS] Action '{action}' on '{target_name}' successful."
-                    )
-                    send_realtime_update(
-                        db_run_id,
-                        {
-                            "type": "step_result",
-                            "step": step.get("step"),
-                            "status": "PASS",
-                        },
-                    )
-
-                # No exception means functional pass
-                if visual_status == "FAIL":
-                    # This is not a functional failure, so we don't set status to FAIL here.
-                    # We just record the visual status.
-                    failure_reason = "Visual test failed: One or more screens did not match their approved baselines."
-                    send_realtime_update(
-                        db_run_id,
-                        {"type": "run_end", "status": "PASS", "visual_status": "FAIL", "reason": failure_reason},
-                    )
-                else:
-                    send_realtime_update(
-                        db_run_id,
-                        {"type": "run_end", "status": "PASS", "visual_status": visual_status},
-                    )
+                    if is_live_view:
+                        send_realtime_update(db_run_id, {"type": "step_result", "step": step.get('step'), "status": "PASS"})
+                
+                if is_live_view:
+                    final_live_status = "FAIL" if visual_status == "FAIL" else "PASS"
+                    reason = "Visual test failed" if visual_status == "FAIL" else None
+                    send_realtime_update(db_run_id, {"type": "run_end", "status": final_live_status, "reason": reason})
 
             except (PlaywrightError, ValueError, AssertionError) as e:
-                print(f"[FAIL] Test run finished with an error: {e}")
                 status = "FAIL"
                 failure_reason = re.sub(r"\s+", " ", str(e).splitlines()[0])
-
-                send_realtime_update(
-                    db_run_id,
-                    {"type": "run_end", "status": "FAIL", "reason": failure_reason},
-                )
-
+                if is_live_view:
+                    send_realtime_update(db_run_id, {"type": "run_end", "status": "FAIL", "reason": failure_reason})
+                
                 if 'page' in locals() and page and minio_client:
                     try:
                         screenshot_path = f"{artifacts_path}/failure.png"
                         screenshot_bytes = page.screenshot()
-                        minio_client.put_object(
-                            ARTIFACTS_BUCKET_NAME,
-                            screenshot_path,
-                            io.BytesIO(screenshot_bytes),
-                            len(screenshot_bytes),
-                        )
-
+                        minio_client.put_object(ARTIFACTS_BUCKET_NAME, screenshot_path, io.BytesIO(screenshot_bytes), len(screenshot_bytes))
                         if context:
                             trace_path_local = f"debug/trace_{timestamp_slug}.zip"
                             context.tracing.stop(path=trace_path_local)
                             trace_path_remote = f"{artifacts_path}/trace.zip"
-                            minio_client.fput_object(
-                                ARTIFACTS_BUCKET_NAME,
-                                trace_path_remote,
-                                trace_path_local,
-                            )
+                            minio_client.fput_object(ARTIFACTS_BUCKET_NAME, trace_path_remote, trace_path_local)
                             if os.path.exists(trace_path_local): os.remove(trace_path_local)
                     except Exception as artifact_error:
-                        print(
-                            f"  [ERROR] Could not save failure artifacts: {artifact_error}"
-                        )
+                        print(f"  [ERROR] Could not save failure artifacts: {artifact_error}")
             
             finally:
                 if context: context.close()
                 if browser: browser.close()
         
-        # Determine final status after the browser context is closed
+        # Determine final status
+        final_visual_status = visual_status
         if status == "PASS" and visual_status == "FAIL":
             final_visual_status = "FAIL"
         elif status == "PASS":
             final_visual_status = visual_status if visual_status != 'N/A' else 'PASS'
-        else: # Functional failure
-            final_visual_status = 'FAIL' if visual_failures_list else visual_status
-        
-        print(f"--- Test Run Finished with Status: {status} (Visual: {final_visual_status}) ---")
+        else:
+            final_visual_status = "FAIL"
+
         update_result_in_db(
             db_run_id=db_run_id,
             status=status,
@@ -377,19 +294,20 @@ def run_test_case(test_case_json: dict):
             visual_artifacts=visual_failures_list,
         )
 
+        send_final_status_broadcast({
+            "type": "status_update",
+            "id": db_run_id,
+            "status": status,
+            "visual_status": final_visual_status,
+        })
+
 
 def main():
     while True:
         try:
             credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASS)
-            connection = pika.BlockingConnection(
-                pika.ConnectionParameters(
-                    host=RABBITMQ_HOST, credentials=credentials, heartbeat=600
-                )
-            )
-            print("Execution Agent: Successfully connected to RabbitMQ.")
+            connection = pika.BlockingConnection(pika.ConnectionParameters(host=RABBITMQ_HOST, credentials=credentials, heartbeat=600))
             channel = connection.channel()
-
             def callback(ch, method, properties, body):
                 try:
                     test_case = json.loads(body)
@@ -398,27 +316,15 @@ def main():
                     print(f"ERROR processing job in agent callback: {e}")
                 finally:
                     ch.basic_ack(delivery_tag=method.delivery_tag)
-
             channel.basic_qos(prefetch_count=1)
-
             queues_to_listen = ["execution_queue", "live_view_queue"]
-
             for queue_name in queues_to_listen:
                 channel.queue_declare(queue=queue_name, durable=True)
                 channel.basic_consume(queue=queue_name, on_message_callback=callback)
-
-            print(
-                f" [*] Execution Agent waiting for jobs on queue(s): {', '.join(queues_to_listen)}. To exit press CTRL-C"
-            )
+            print(f" [*] Execution Agent waiting for jobs on queue(s): {', '.join(queues_to_listen)}. To exit press CTRL-C")
             channel.start_consuming()
-
-        except (
-            pika.exceptions.AMQPConnectionError,
-            pika.exceptions.StreamLostError,
-        ) as e:
-            print(
-                f"Execution Agent: Connection lost or unavailable. Error: {e}. Retrying in 5 seconds..."
-            )
+        except (pika.exceptions.AMQPConnectionError, pika.exceptions.StreamLostError) as e:
+            print(f"Execution Agent: Connection lost or unavailable. Error: {e}. Retrying in 5 seconds...")
             time.sleep(5)
         except KeyboardInterrupt:
             print("Execution Agent: Shutting down.")

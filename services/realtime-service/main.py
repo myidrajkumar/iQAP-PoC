@@ -45,8 +45,16 @@ class ConnectionManager:
 
     async def broadcast_notification(self, message: dict):
         json_message = json.dumps(message)
+        # Create a list of tasks to send messages concurrently
+        disconnected_clients = []
         for connection in self.notification_connections:
-            await connection.send_text(json_message)
+            try:
+                await connection.send_text(json_message)
+            except Exception:
+                disconnected_clients.append(connection)
+        # Clean up any connections that were closed
+        for client in disconnected_clients:
+            self.disconnect_notifications(client)
 
 
 manager = ConnectionManager()
@@ -54,6 +62,7 @@ manager = ConnectionManager()
 app = FastAPI(title="iQAP Realtime Service")
 
 
+# --- WebSocket Endpoint for Notifications ---
 @app.websocket("/ws/notifications")
 async def websocket_notification_endpoint(websocket: WebSocket):
     await manager.connect_notifications(websocket)
@@ -65,29 +74,28 @@ async def websocket_notification_endpoint(websocket: WebSocket):
         manager.disconnect_notifications(websocket)
 
 
-# --- WebSocket Endpoint for the Frontend ---
+# --- WebSocket Endpoint for the Frontend Live View ---
 @app.websocket("/ws/{run_id}")
 async def websocket_endpoint(websocket: WebSocket, run_id: int):
     await manager.connect(websocket, run_id)
     try:
         while True:
-            # Keep the connection alive by waiting for messages (e.g., pings)
             await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket, run_id)
 
 
-@app.post("/notify/run-created")
-async def notify_run_created(notification: dict):
+@app.post("/notify/broadcast")
+async def broadcast_notification_to_clients(notification: dict):
     try:
         await manager.broadcast_notification(notification)
         return {"status": "notification sent"}
     except Exception as e:
-        print(f"Error sending notification: {e}")
+        print(f"Error sending broadcast notification: {e}")
         raise HTTPException(status_code=500, detail="Failed to send notification.")
 
 
-# --- REST Endpoint for the Execution Agent ---
+# --- REST Endpoint for the Execution Agent (Live View ONLY) ---
 @app.post("/update/{run_id}")
 async def send_update_to_client(run_id: int, update: dict):
     try:

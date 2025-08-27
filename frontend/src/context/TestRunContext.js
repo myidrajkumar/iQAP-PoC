@@ -45,9 +45,28 @@ export const TestRunProvider = ({ children }) => {
         };
 
         socket.onmessage = (event) => {
-            const newRun = JSON.parse(event.data);
-            console.log("Received new run notification:", newRun);
-            setResults(prevResults => [newRun, ...prevResults]);
+            const message = JSON.parse(event.data);
+            
+            // Differentiate between a new run object and a status update
+            if (message.objective) { // A full run object from the orchestrator
+                console.log("Received new run notification:", message);
+                setResults(prevResults => {
+                    // Prevent duplicates from race conditions
+                    if (prevResults.some(r => r.id === message.id)) {
+                        return prevResults;
+                    }
+                    return [message, ...prevResults];
+                });
+            } else if (message.type === 'status_update') { // A status update from the agent
+                console.log("Received status update:", message);
+                setResults(prevResults => 
+                    prevResults.map(run =>
+                        run.id === message.id
+                            ? { ...run, status: message.status, visual_status: message.visual_status }
+                            : run
+                    )
+                );
+            }
         };
 
         socket.onclose = () => {

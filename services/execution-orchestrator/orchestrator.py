@@ -40,8 +40,8 @@ def create_initial_record(test_case: dict):
         test_case_id = test_case.get("test_case_id", "N/A")
 
         sql = """
-            INSERT INTO test_results (objective, test_case_id, status, timestamp)
-            VALUES (%s, %s, 'RUNNING', NOW())
+            INSERT INTO test_results (objective, test_case_id, status, timestamp, visual_status)
+            VALUES (%s, %s, 'RUNNING', NOW(), 'N/A')
             RETURNING *;
         """
         cursor.execute(sql, (objective, test_case_id))
@@ -101,7 +101,7 @@ def main():
                     new_run_record['timestamp'] = new_run_record['timestamp'].isoformat()
                     
                     try:
-                        httpx.post(f"{REALTIME_SERVICE_URL}/notify/run-created", json=new_run_record, timeout=5)
+                        httpx.post(f"{REALTIME_SERVICE_URL}/notify/broadcast", json=new_run_record, timeout=5)
                         print(f"  [Notification] Sent run creation notice for ID: {new_run_record['id']}")
                     except httpx.RequestError as e:
                         print(f"  [Notification] Could not send creation notice: {e}")
