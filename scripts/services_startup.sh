@@ -49,16 +49,10 @@ try {
     Write-Host "Started uvicorn for Realtime Service. Logs in $LOG_FILE_REALTIME"
     Start-Sleep -Seconds 1
 
-    # Start Execution Orchestrator
-    $command = "python -u ./services/execution-orchestrator/orchestrator.py *>> '$LOG_FILE_EXECUTION_ORCHESTRATOR'"
-    $processes += Start-Process -FilePath "powershell.exe" -ArgumentList "-Command", $command -WindowStyle Hidden -PassThru
-    Write-Host "Started Python for Execution Orchestrator. Logs in $LOG_FILE_EXECUTION_ORCHESTRATOR"
-    Start-Sleep -Seconds 1
-
     # Start Execution Agent
-    $command = "python -u ./services/execution-agent/agent.py *>> '$LOG_FILE_EXECUTION_AGENT'"
+    $command = "uvicorn main:app --port 8004 --reload --app-dir ./services/execution-agent/ *>> '$LOG_FILE_EXECUTION_AGENT'"
     $processes += Start-Process -FilePath "powershell.exe" -ArgumentList "-Command", $command -WindowStyle Hidden -PassThru
-    Write-Host "Started Python for Execution Agent. Logs in $LOG_FILE_EXECUTION_AGENT"
+    Write-Host "Started uvicorn for Execution Agent. Logs in $LOG_FILE_EXECUTION_AGENT"
     Start-Sleep -Seconds 1
 
     # Start Frontend

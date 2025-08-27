@@ -1,11 +1,12 @@
 from pydantic import BaseModel
+from typing import List, Dict, Any, Optional
 
+class ParameterSet(BaseModel):
+    dataset_name: str
+    data: Dict[str, Any]
 
-class GenerationRequest(BaseModel):
-    requirement: str
+class JourneyRequest(BaseModel):
+    objective: str
     target_url: str
-
-
-class GenerationResponse(BaseModel):
-    message: str
-    test_case_id: str | None
+    is_live_view: bool = False
+    parameters: Optional[List[ParameterSet]] = None

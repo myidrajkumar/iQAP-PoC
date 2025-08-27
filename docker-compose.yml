@@ -31,6 +31,7 @@ services:
     depends_on:
       - rabbitmq
       - discovery-service
+      - execution-agent
 
   discovery-service:
     container_name: discovery-service
@@ -50,20 +51,11 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
 
-  execution-orchestrator:
-    container_name: execution-orchestrator
-    build: ./services/execution-orchestrator
-    volumes:
-      - ./services/execution-orchestrator:/app
-    env_file: .env
-    environment:
-      - PYTHONUNBUFFERED=1
-      - DOCKER_ENV=true
-    depends_on:
-      - rabbitmq
-
   execution-agent:
+    container_name: execution-agent
     build: ./services/execution-agent
+    ports:
+      - "8004:8004"
     volumes:
       - ./services/execution-agent:/app
       - ./debug:/app/debug
@@ -74,7 +66,6 @@ services:
       - DOCKER_ENV=true
       - REALTIME_SERVICE_URL=http://realtime-service:8003
     depends_on:
-      - execution-orchestrator
       - postgres
       - minio
 

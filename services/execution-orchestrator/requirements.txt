@@ -1,4 +1,0 @@
-python-dotenv
-pika
-psycopg2-binary
-httpx

@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 class AIService:
     """
-    A service class to handle interactions with the Google Gemini Pro model.
+    A service class to handle interactions with the Google Gemini Pro model for agentic planning.
     """
 
     def __init__(self, api_key: str, model_name: str, temperature: float):
@@ -34,82 +34,85 @@ class AIService:
                 f"CRITICAL ERROR: Failed to configure Gemini API. Error: {e}"
             )
 
-    def generate_test_case(self, requirement: str, ui_blueprint: str) -> Dict[str, Any]:
+    def plan_next_step(self, objective: str, history: list, ui_blueprint: str = None) -> Dict[str, Any]:
         """
-        Generates a test case JSON from a business requirement and UI blueprint.
-
-        Returns a fallback mock test case if the AI model is not configured or if the API call fails.
+        Analyzes the objective and history to decide the next action (tool use).
         """
         if not self.model:
-            raise RuntimeError(
-                "Gemini model is not configured. Cannot generate test case."
-            )
+            raise RuntimeError("Gemini model is not configured.")
 
-        prompt = self._build_prompt(requirement, ui_blueprint)
+        prompt = self._build_agent_prompt(objective, history, ui_blueprint)
 
         try:
-            logger.info("Calling Google Gemini API...")
+            logger.info("Calling Gemini API for agent planning...")
             response = self.model.generate_content(prompt)
             cleaned_response = (
                 response.text.replace("```json", "").replace("```", "").strip()
             )
-
+            
+            # The response should be a JSON object representing the agent's thought process and next action
             result = json.loads(cleaned_response)
-
-            required_keys = ["test_case_id", "objective", "parameters", "steps"]
-            if all(key in result for key in required_keys):
-                logger.info("Gemini API call successful and response is valid.")
+            
+            if "action" in result and "parameters" in result:
+                logger.info(f"Gemini planned next action: {result['action']}")
                 return result
             else:
-                logger.error("Gemini response was valid JSON but missed required keys.")
-                raise ValueError("AI failed to generate a valid test case structure.")
+                logger.error("Gemini response was valid JSON but missed required action/parameters keys.")
+                raise ValueError("AI failed to generate a valid action plan.")
 
         except Exception as e:
-            logger.warning(f"Gemini API call or parsing failed: {e}. Using fallback.")
-            raise ValueError(f"An error occurred during AI generation: {e}")
+            logger.warning(f"Gemini API call or parsing failed: {e}. Raising error.")
+            raise ValueError(f"An error occurred during AI planning: {e}")
 
-    def _build_prompt(self, requirement: str, ui_blueprint: str) -> str:
-        """Constructs the prompt to be sent to the Gemini model."""
+    def _build_agent_prompt(self, objective: str, history: list, ui_blueprint: str = None) -> str:
+        """Constructs the ReAct (Reason+Act) style prompt for the agent."""
+        
+        history_str = "\n".join(f"- {item}" for item in history)
+        blueprint_str = f"""
+        **Current UI Blueprint:**
+        ```json
+        {ui_blueprint if ui_blueprint else "No UI blueprint available. You must use the 'discover' tool."}
+        ```
+        """
+
         return f"""
-        You are a highly precise JSON generation machine. Your only function is to convert a user's requirement and a UI blueprint into a structured JSON test case.
+        You are an autonomous QA Agent. Your goal is to test a web application based on a given objective.
+        You operate in a loop: you think, you choose a tool, and you observe the result.
 
-        **CRITICAL RULES:**
-        1.  **Mandatory Keys:** The final JSON object MUST contain these exact top-level keys: `test_case_id`, `objective`, `parameters`, `steps`.
-        2.  **Action Types:** The value for the `action` key in each step MUST be one of these strings ONLY: "ENTER_TEXT", "CLICK", "VERIFY_ELEMENT_VISIBLE", "VISUAL_VALIDATION".
-        3.  **VISUAL_VALIDATION:** Use this action after a critical step (like a login or navigating to a new page) to take a visual snapshot. The `target_element` for this action should be a descriptive name for the view, e.g., "inventory_page" or "login_screen".
-        4.  **Output Format:** You MUST return ONLY the raw JSON object. Do not include any explanatory text or markdown.
+        **Objective:** "{objective}"
 
-        ---
-        **GOOD JSON EXAMPLE:**
+        **Tools Available:**
+        1. `discover`: Use this when you are on a new page or need to understand the available UI elements.
+           - Parameters: {{ "url": "The URL of the page to discover" }}
+        2. `execute_step`: Use this to perform an action on a UI element you have already discovered.
+           - Parameters: {{ "step": {{ "action": "CLICK" | "ENTER_TEXT" | "VISUAL_VALIDATION", "target_element": "The logical_name of the element", "data_key": "(optional) The key for the data to use" }} }}
+        3. `finish`: Use this when you have successfully completed all steps required by the objective.
+           - Parameters: {{ "status": "success", "reason": "A brief summary of why the test is complete." }}
+        4. `fail`: Use this if you cannot proceed or determine that the objective cannot be met.
+           - Parameters: {{ "reason": "A clear explanation of why you are failing the test." }}
+
+        **History of Actions Taken:**
+        {history_str if history_str else "No actions taken yet."}
+
+        {blueprint_str if ui_blueprint else ""}
+
+        **Your Task:**
+        Based on the objective and the history, think step-by-step and then decide on the single next tool to use.
+        Your output MUST be a single, raw JSON object with your thought process and the chosen action.
+
+        **Example JSON Output:**
         {{
-            "test_case_id": "TC_LOGIN_LOGOUT_VISUAL",
-            "objective": "Verify a user can log in and then log out, with visual checks.",
-            "parameters": [
-                {{
-                    "dataset_name": "valid_credentials",
-                    "data": {{ "Username": "standard_user", "Password": "secret_sauce" }}
-                }}
-            ],
-            "steps": [
-                {{ "step": 1, "action": "VISUAL_VALIDATION", "target_element": "login_page_initial_view" }},
-                {{ "step": 2, "action": "ENTER_TEXT", "target_element": "Username", "data_key": "Username" }},
-                {{ "step": 3, "action": "ENTER_TEXT", "target_element": "Password", "data_key": "Password" }},
-                {{ "step": 4, "action": "CLICK", "target_element": "Login" }},
-                {{ "step": 5, "action": "VISUAL_VALIDATION", "target_element": "inventory_page_after_login" }}
-            ]
+          "thought": "I have just landed on the inventory page. The objective requires me to log out. I need to find the logout button. I don't see it in the current blueprint, but I see a 'Burger Menu' button which likely contains the logout link. I will click the menu button first.",
+          "action": "execute_step",
+          "parameters": {{
+            "step": {{
+              "action": "CLICK",
+              "target_element": "Burger Menu"
+            }}
+          }}
         }}
-        ---
 
-        **TASK:**
-
-        **Business Requirement:**
-        {requirement}
-
-        **UI Blueprint:**
-        {ui_blueprint}
-
-        ---
-        Generate the JSON test case now.
+        Now, generate the JSON for your next action.
         """
 
 

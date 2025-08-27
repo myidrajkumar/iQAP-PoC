@@ -1,7 +1,8 @@
 python-dotenv
 playwright
-pika
 psycopg2-binary
 Pillow
 minio
 httpx
+fastapi
+uvicorn[standard]

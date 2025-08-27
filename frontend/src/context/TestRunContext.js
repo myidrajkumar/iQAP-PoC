@@ -15,21 +15,17 @@ export const useTestRun = () => {
 export const TestRunProvider = ({ children }) => {
     const [results, setResults] = useState([]);
     const [isLoading, setIsLoading] = useState(false);
-    const [isExecuting, setIsExecuting] = useState(false);
     const [error, setError] = useState('');
     const [statusMessage, setStatusMessage] = useState('');
-    const [testCase, setTestCase] = useState(null);
     const navigate = useNavigate();
 
     const fetchResults = useCallback(async () => {
         try {
             const response = await axios.get(`${reportingApiUrl}/results`);
             setResults(response.data);
-            return response.data;
         } catch (err) {
             console.error("Failed to fetch results", err);
             setError("Could not load test results.");
-            return null;
         }
     }, []);
 
@@ -39,97 +35,65 @@ export const TestRunProvider = ({ children }) => {
 
     useEffect(() => {
         const socket = new WebSocket(`${websocketUrl}/ws/notifications`);
-
-        socket.onopen = () => {
-            console.log("Notification WebSocket connected.");
-        };
+        socket.onopen = () => console.log("Notification WebSocket connected.");
+        socket.onclose = () => console.log("Notification WebSocket disconnected.");
 
         socket.onmessage = (event) => {
             const message = JSON.parse(event.data);
             
-            // Differentiate between a new run object and a status update
-            if (message.objective) { // A full run object from the orchestrator
+            if (message.objective) { // A new run object
                 console.log("Received new run notification:", message);
-                setResults(prevResults => {
-                    // Prevent duplicates from race conditions
-                    if (prevResults.some(r => r.id === message.id)) {
-                        return prevResults;
-                    }
-                    return [message, ...prevResults];
-                });
-            } else if (message.type === 'status_update') { // A status update from the agent
-                console.log("Received status update:", message);
+                setResults(prevResults => [message, ...prevResults.filter(r => r.id !== message.id)]);
+            } else if (message.id) { // A final status update
+                console.log("Received final status update:", message);
                 setResults(prevResults => 
                     prevResults.map(run =>
                         run.id === message.id
-                            ? { ...run, status: message.status, visual_status: message.visual_status }
+                            ? { ...run, status: message.status, failure_reason: message.failure_reason }
                             : run
                     )
                 );
             }
         };
 
-        socket.onclose = () => {
-            console.log("Notification WebSocket disconnected.");
-        };
-
-        return () => {
-            if (socket.readyState === WebSocket.OPEN) {
-                socket.close();
-            }
-        };
+        return () => socket.close();
     }, []);
 
-
-    const generateTest = async (requirement, targetUrl) => {
+    const startTestJourney = async (objective, targetUrl, isLiveView) => {
         setIsLoading(true);
         setError('');
-        setTestCase(null);
-        setStatusMessage('Generating test case via Gemini...');
+        setStatusMessage('Starting AI Test Agent...');
         try {
-            const response = await axios.post(`${orchestratorApiUrl}/api/v1/generate-test-case`, { requirement, target_url: targetUrl });
-            setTestCase(response.data);
-            setStatusMessage('');
+            const payload = {
+                objective,
+                target_url: targetUrl,
+                is_live_view: isLiveView,
+                parameters: [{
+                    dataset_name: "valid_credentials",
+                    data: { "Username": "standard_user", "Password": "secret_sauce" }
+                }]
+            };
+            // The API call returns the initial 'RUNNING' record, which is added via WebSocket
+            await axios.post(`${orchestratorApiUrl}/api/v1/start-test-journey`, payload);
+            
+            setStatusMessage('Agent has started the journey. See history for live updates.');
+            navigate('/runs');
+            
         } catch (err) {
-            setError(err.response?.data?.detail || "Failed to generate test case.");
+            setError(err.response?.data?.detail || "Failed to start test journey.");
             setStatusMessage('');
         } finally {
             setIsLoading(false);
         }
     };
 
-    const runTest = async (testCaseToRun, isLiveView = false) => {
-        setIsExecuting(true);
-        setError('');
-        setStatusMessage('Publishing job for execution...');
-        try {
-            const payload = { ...testCaseToRun, is_live_view: isLiveView };
-            await axios.post(`${orchestratorApiUrl}/api/v1/publish-test-case`, payload);
-            
-            setStatusMessage('Job published successfully! The run will appear in the history shortly.');
-            setTestCase(null);
-            
-            navigate('/runs');
-            
-        } catch (err) {
-            setError(err.response?.data?.detail || "Failed to publish job.");
-            setStatusMessage('');
-        } finally {
-            setIsExecuting(false);
-        }
-    };
-
     const value = {
         results,
         isLoading,
-        isExecuting,
         error,
         statusMessage,
-        testCase,
         fetchResults,
-        generateTest,
-        runTest,
-        setTestCase,
+        startTestJourney, // The new unified function
     };
 
     return (
