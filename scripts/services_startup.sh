@@ -1,38 +1,84 @@
-#!/bin/bash
+# Define paths for log files using Join-Path for robustness
+$logDir = "logs"
+$LOG_FILE_AI_ORCHESTRATOR = Join-Path $PSScriptRoot $logDir "ai_orchestrator.log"
+$LOG_FILE_DISCOVERY = Join-Path $PSScriptRoot $logDir "discovery.log"
+$LOG_FILE_REPORTING = Join-Path $PSScriptRoot $logDir "reporting.log"
+$LOG_FILE_REALTIME = Join-Path $PSScriptRoot $logDir "realtime.log"
+$LOG_FILE_EXECUTION_ORCHESTRATOR = Join-Path $PSScriptRoot $logDir "execution_orchestrator.log"
+$LOG_FILE_EXECUTION_AGENT = Join-Path $PSScriptRoot $logDir "execution_agent.log"
+$LOG_FILE_FRONTEND = Join-Path $PSScriptRoot $logDir "frontend.log"
 
-LOG_FILE_AI_ORCHESTRATOR="logs/ai_orchestrator.log"
-LOG_FILE_DISCOVERY="logs/discovery.log"
-LOG_FILE_REPORTING="logs/reporting.log"
-LOG_FILE_REALTIME="logs/realtime.log"
-LOG_FILE_EXECUTION_ORCHESTRATOR="logs/execution_orchestrator.log"
-LOG_FILE_EXECUTION_AGENT="logs/execution_agent.log"
-LOG_FILE_FRONTEND="logs/frontend.log"
+# Create the logs directory if it doesn't exist
+if (-not (Test-Path (Join-Path $PSScriptRoot $logDir))) {
+    New-Item -ItemType Directory -Path (Join-Path $PSScriptRoot $logDir)
+}
 
-mkdir -p logs
+# Activate the Python virtual environment
+try {
+    . (Join-Path $PSScriptRoot '..\venv\Scripts\Activate.ps1')
+} catch {
+    Write-Host "Failed to activate Python virtual environment. Please run the setup script first."
+    exit 1
+}
 
-source venv/Scripts/activate
+# Array to keep track of all started processes
+$processes = @()
 
-uvicorn main:app --port 8000 --reload --app-dir ./services/ai-orchestrator/ > "$LOG_FILE_AI_ORCHESTRATOR" 2>&1 &
-echo "Started uvicorn for AI Orchestrator. Logs in $LOG_FILE_AI_ORCHESTRATOR"
+try {
+    # Start AI Orchestrator
+    $command = "uvicorn main:app --port 8000 --reload --app-dir ./services/ai-orchestrator/ *>> '$LOG_FILE_AI_ORCHESTRATOR'"
+    $processes += Start-Process -FilePath "powershell.exe" -ArgumentList "-Command", $command -WindowStyle Hidden -PassThru
+    Write-Host "Started uvicorn for AI Orchestrator. Logs in $LOG_FILE_AI_ORCHESTRATOR"
+    Start-Sleep -Seconds 1
 
-uvicorn main:app --port 8001 --reload --app-dir ./services/discovery-service/ > "$LOG_FILE_DISCOVERY" 2>&1 &
-echo "Started uvicorn for Discovery Service. Logs in $LOG_FILE_DISCOVERY"
+    # Start Discovery Service
+    $command = "uvicorn main:app --port 8001 --reload --app-dir ./services/discovery-service/ *>> '$LOG_FILE_DISCOVERY'"
+    $processes += Start-Process -FilePath "powershell.exe" -ArgumentList "-Command", $command -WindowStyle Hidden -PassThru
+    Write-Host "Started uvicorn for Discovery Service. Logs in $LOG_FILE_DISCOVERY"
+    Start-Sleep -Seconds 1
 
-uvicorn main:app --port 8002 --reload --app-dir ./services/reporting-service/ > "$LOG_FILE_REPORTING" 2>&1 &
-echo "Started uvicorn for Reporting Service. Logs in $LOG_FILE_REPORTING"
+    # Start Reporting Service
+    $command = "uvicorn main:app --port 8002 --reload --app-dir ./services/reporting-service/ *>> '$LOG_FILE_REPORTING'"
+    $processes += Start-Process -FilePath "powershell.exe" -ArgumentList "-Command", $command -WindowStyle Hidden -PassThru
+    Write-Host "Started uvicorn for Reporting Service. Logs in $LOG_FILE_REPORTING"
+    Start-Sleep -Seconds 1
 
-uvicorn main:app --port 8003 --reload --app-dir ./services/realtime-service/ > "$LOG_FILE_REALTIME" 2>&1 &
-echo "Started uvicorn for Realtime Service. Logs in $LOG_FILE_REALTIME"
+    # Start Realtime Service
+    $command = "uvicorn main:app --port 8003 --reload --app-dir ./services/realtime-service/ *>> '$LOG_FILE_REALTIME'"
+    $processes += Start-Process -FilePath "powershell.exe" -ArgumentList "-Command", $command -WindowStyle Hidden -PassThru
+    Write-Host "Started uvicorn for Realtime Service. Logs in $LOG_FILE_REALTIME"
+    Start-Sleep -Seconds 1
 
-python -u ./services/execution-orchestrator/orchestrator.py > "$LOG_FILE_EXECUTION_ORCHESTRATOR" 2>&1 &
-echo "Started uvicorn for Execution Orchestrator. Logs in $LOG_FILE_EXECUTION_ORCHESTRATOR"
+    # Start Execution Orchestrator
+    $command = "python -u ./services/execution-orchestrator/orchestrator.py *>> '$LOG_FILE_EXECUTION_ORCHESTRATOR'"
+    $processes += Start-Process -FilePath "powershell.exe" -ArgumentList "-Command", $command -WindowStyle Hidden -PassThru
+    Write-Host "Started Python for Execution Orchestrator. Logs in $LOG_FILE_EXECUTION_ORCHESTRATOR"
+    Start-Sleep -Seconds 1
 
-python -u ./services/execution-agent/agent.py > "$LOG_FILE_EXECUTION_AGENT" 2>&1 &
-echo "Started uvicorn for Execution Agent. Logs in $LOG_FILE_EXECUTION_AGENT"
+    # Start Execution Agent
+    $command = "python -u ./services/execution-agent/agent.py *>> '$LOG_FILE_EXECUTION_AGENT'"
+    $processes += Start-Process -FilePath "powershell.exe" -ArgumentList "-Command", $command -WindowStyle Hidden -PassThru
+    Write-Host "Started Python for Execution Agent. Logs in $LOG_FILE_EXECUTION_AGENT"
+    Start-Sleep -Seconds 1
 
-npm start --prefix ./frontend/  > "$LOG_FILE_FRONTEND" 2>&1 &
-echo "Started npm for frontend. Logs in $LOG_FILE_FRONTEND"
+    # Start Frontend
+    $command = "npm start --prefix ./frontend/ *>> '$LOG_FILE_FRONTEND'"
+    $processes += Start-Process -FilePath "powershell.exe" -ArgumentList "-Command", $command -WindowStyle Hidden -PassThru
+    Write-Host "Started npm for frontend. Logs in $LOG_FILE_FRONTEND"
 
-wait
+    Write-Host "`nAll services are running in the background."
+    Write-Host "Press Ctrl+C in this window to stop all services."
+    
+    Wait-Process -Id ($processes.Id)
 
-echo "All services have stopped."
+}
+finally {
+    Write-Host "`nStopping all services..."
+    $processes | ForEach-Object {
+        if ($_.HasExited -eq $false) {
+            Write-Host "Stopping process with ID $($_.Id)..."
+            Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+        }
+    }
+    Write-Host "All services have been stopped."
+}
