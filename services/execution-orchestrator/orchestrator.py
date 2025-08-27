@@ -8,6 +8,7 @@ from psycopg2.extras import RealDictCursor
 
 load_dotenv()
 
+# --- Database Connection Details ---
 is_docker = os.environ.get("DOCKER_ENV") == "true"
 if is_docker:
     DB_HOST = "iqap-postgres"
@@ -86,15 +87,20 @@ def main():
                         f" [x] Orchestrator received job: {test_case.get('test_case_id')}"
                     )
 
+                    new_run_id = create_initial_record(test_case)
+                    if not new_run_id:
+                        print(
+                            "[FATAL] Could not create DB record. Acknowledging message to avoid requeue."
+                        )
+                        ch.basic_ack(delivery_tag=method.delivery_tag)
+                        return
+
+                    test_case["db_run_id"] = new_run_id
+
                     is_live_view = test_case.get("is_live_view", False)
                     target_queue = (
                         "live_view_queue" if is_live_view else "execution_queue"
                     )
-
-                    new_run_id = create_initial_record(test_case)
-                    if new_run_id:
-                        test_case["db_run_id"] = new_run_id
-
                     channel.queue_declare(queue=target_queue, durable=True)
 
                     ch.basic_publish(
@@ -103,7 +109,9 @@ def main():
                         body=json.dumps(test_case),
                         properties=pika.BasicProperties(delivery_mode=2),
                     )
-                    print(f" [>] Orchestrator dispatched job to queue: {target_queue}.")
+                    print(
+                        f" [>] Orchestrator dispatched job with run_id {new_run_id} to queue: {target_queue}."
+                    )
                     ch.basic_ack(delivery_tag=method.delivery_tag)
                 except Exception as e:
                     print(f"ERROR in Orchestrator callback: {e}")

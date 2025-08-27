@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class GenerationRequest(BaseModel):
@@ -9,4 +9,3 @@ class GenerationRequest(BaseModel):
 class GenerationResponse(BaseModel):
     message: str
     test_case_id: str | None
-    run_id: int | None = Field(default=None)

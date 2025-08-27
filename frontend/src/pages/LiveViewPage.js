@@ -14,6 +14,8 @@ const LiveViewPage = () => {
     const ws = useRef(null);
 
     useEffect(() => {
+        if (ws.current) return;
+
         ws.current = new WebSocket(`${websocketUrl}/ws/${runId}`);
         ws.current.onopen = () => setConnectionStatus('Connected');
         ws.current.onclose = () => setConnectionStatus('Disconnected');
@@ -21,9 +23,15 @@ const LiveViewPage = () => {
 
         ws.current.onmessage = (event) => {
             const message = JSON.parse(event.data);
-
+            
             if (message.type === 'run_start') {
                 setSteps(message.steps || []);
+                // Initialize all step statuses to PENDING
+                const initialStatuses = (message.steps || []).reduce((acc, step) => {
+                    acc[step.step] = 'PENDING';
+                    return acc;
+                }, {});
+                setStepStatuses(initialStatuses);
             }
             if (message.type === 'step_result') {
                 setStepStatuses(prev => ({ ...prev, [message.step]: message.status }));
@@ -31,7 +39,7 @@ const LiveViewPage = () => {
             if (message.type === 'run_end') {
                 setFinalStatus(message.status);
                 if(message.status === 'FAIL') {
-                    setFailureReason(message.reason);
+                    setFailureReason(message.reason || "The test failed during execution.");
                 }
                 ws.current.close();
             }
@@ -39,7 +47,7 @@ const LiveViewPage = () => {
 
         const socket = ws.current;
         return () => {
-            if (socket.readyState === WebSocket.OPEN) {
+            if (socket && socket.readyState === WebSocket.OPEN) {
                 socket.close();
             }
         };
@@ -53,6 +61,7 @@ const LiveViewPage = () => {
                 <div className="live-step-details">
                     <span className="live-step-action">{step.action}: </span>
                     <span>{step.target_element}</span>
+                    {step.data_key && <span className="live-step-data"> (using key: {step.data_key})</span>}
                 </div>
                 <div className="live-step-status">{status}</div>
             </div>
@@ -77,11 +86,11 @@ const LiveViewPage = () => {
             )}
 
             <div className="steps-wrapper">
-                {steps.length > 0 ? steps.map(renderStep) : <p>Waiting for test to start...</p>}
+                {steps.length > 0 ? steps.map(renderStep) : <p className="waiting-text">Waiting for test to start...</p>}
             </div>
 
             {finalStatus !== 'RUNNING' && (
-                <Link to="/runs" className="back-to-runs-btn">Back to Test Runs</Link>
+                <Link to={`/results/${runId}`} className="view-report-btn">View Full Report</Link>
             )}
         </div>
     );

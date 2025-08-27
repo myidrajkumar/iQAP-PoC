@@ -38,35 +38,36 @@ export const TestRunProvider = ({ children }) => {
         }
     }, []);
 
-    useEffect(() => {
-        if (isPolling) {
-            pollingAttemptsRef.current = 0;
-            pollingIntervalRef.current = setInterval(async () => {
-                console.log(`Polling... Attempt ${pollingAttemptsRef.current + 1}`);
-                const currentResults = await fetchResults();
-                pollingAttemptsRef.current++;
-
-                const isStillRunning = currentResults?.some(r => r.status === 'RUNNING');
-
-                if (!isStillRunning || pollingAttemptsRef.current >= POLLING_ATTEMPTS) {
-                    setIsPolling(false);
-                }
-            }, POLLING_INTERVAL);
-        } else {
-            if (pollingIntervalRef.current) {
-                clearInterval(pollingIntervalRef.current);
-                console.log("Polling stopped.");
-            }
+    const startPolling = useCallback(() => {
+        if (pollingIntervalRef.current) {
+            clearInterval(pollingIntervalRef.current);
         }
+        pollingAttemptsRef.current = 0;
+        pollingIntervalRef.current = setInterval(async () => {
+            console.log(`Polling... Attempt ${pollingAttemptsRef.current + 1}`);
+            const currentResults = await fetchResults();
+            pollingAttemptsRef.current++;
+            const isStillRunning = currentResults?.some(r => r.status === 'RUNNING');
+            if (!isStillRunning || pollingAttemptsRef.current >= POLLING_ATTEMPTS) {
+                setIsPolling(false);
+            }
+        }, POLLING_INTERVAL);
+    }, [fetchResults]);
+
+    useEffect(() => {
+        if (!isPolling && pollingIntervalRef.current) {
+            clearInterval(pollingIntervalRef.current);
+            console.log("Polling stopped.");
+        }
+    }, [isPolling]);
+
+    useEffect(() => {
+        fetchResults();
         return () => {
             if (pollingIntervalRef.current) {
                 clearInterval(pollingIntervalRef.current);
             }
         };
-    }, [isPolling, fetchResults]);
-
-    useEffect(() => {
-        fetchResults();
     }, [fetchResults]);
 
     const generateTest = async (requirement, targetUrl) => {
@@ -78,8 +79,7 @@ export const TestRunProvider = ({ children }) => {
             const response = await axios.post(`${orchestratorApiUrl}/api/v1/generate-test-case`, { requirement, target_url: targetUrl });
             setTestCase(response.data);
             setStatusMessage('');
-        } catch (err)
-        {
+        } catch (err) {
             setError(err.response?.data?.detail || "Failed to generate test case.");
             setStatusMessage('');
         } finally {
@@ -93,18 +93,19 @@ export const TestRunProvider = ({ children }) => {
         setStatusMessage('Publishing job for execution...');
         try {
             const payload = { ...testCaseToRun, is_live_view: isLiveView };
-            const response = await axios.post(`${orchestratorApiUrl}/api/v1/publish-test-case`, payload);
-            const newRunId = response.data.run_id;
+            await axios.post(`${orchestratorApiUrl}/api/v1/publish-test-case`, payload);
             
             setStatusMessage('Job published successfully!');
             setTestCase(null);
             
             if (isLiveView) {
-                navigate(`/runs/${newRunId}/live`);
+                // For live view, we can't know the ID yet, so we go to the main runs page
+                // The user will see their test pop up with a "RUNNING" status
+                navigate('/runs');
             } else {
                 navigate('/runs');
-                setTimeout(() => setIsPolling(true), 500);
             }
+            setTimeout(() => setIsPolling(true), 1500); // Increased delay
             
         } catch (err) {
             setError(err.response?.data?.detail || "Failed to publish job.");
