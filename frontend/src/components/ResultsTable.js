@@ -32,8 +32,10 @@ const ResultsTable = ({ results, onRefresh }) => (
               <td><span className={`status-badge status-${result.visual_status?.toLowerCase()?.replace(/_/g, '-').replace('/', '-') || 'n-a'}`}>{result.visual_status || 'N/A'}</span></td>
               <td>{new Date(result.timestamp).toLocaleString()}</td>
               <td>
-                {result.status === 'FAIL' || result.visual_status === 'FAIL' ? (
-                  <Link to={`/results/${result.id}`}>View</Link>
+                {result.status === 'RUNNING' ? (
+                  <Link to={`/runs/${result.id}/live`}>Live View</Link>
+                ) : (result.status === 'FAIL' || result.visual_status === 'FAIL') ? (
+                  <Link to={`/results/${result.id}`}>View Details</Link>
                 ) : (
                   '--'
                 )}

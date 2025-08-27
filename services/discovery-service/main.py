@@ -53,16 +53,21 @@ def get_interactive_elements(elements, locators):
     for i in range(locators.count()):
         locator = locators.nth(i)
         try:
+            # Skip invisible elements, which can cause errors
+            if not locator.is_visible():
+                continue
+
             tag = locator.evaluate("element => element.tagName.toLowerCase()")
             text = locator.text_content(timeout=500).strip()
             element_id = locator.get_attribute("id")
             name = locator.get_attribute("name")
             placeholder = locator.get_attribute("placeholder")
             aria_label = locator.get_attribute("aria-label")
+            data_test = locator.get_attribute("data-test")
 
-            # Generate a logical name
             logical_name = (
                 element_id
+                or data_test
                 or name
                 or aria_label
                 or text.replace(" ", "_")
@@ -77,6 +82,7 @@ def get_interactive_elements(elements, locators):
                     "id": element_id,
                     "name": name,
                     "placeholder": placeholder,
+                    "data_test": data_test,  # Add to the blueprint
                 }
             )
         except Exception:

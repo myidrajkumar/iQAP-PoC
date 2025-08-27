@@ -39,6 +39,8 @@ MINIO_ACCESS_KEY = os.getenv("MINIO_ROOT_USER")
 MINIO_SECRET_KEY = os.getenv("MINIO_ROOT_PASSWORD")
 ARTIFACTS_BUCKET_NAME = "test-artifacts"
 
+IS_HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
+
 os.makedirs("debug", exist_ok=True)
 
 try:
@@ -99,27 +101,44 @@ def update_result_in_db(
 
 
 def find_element_locator(page, target_name: str, ui_blueprint: list):
+    """
+    Finds a Playwright locator using a robust, hierarchical strategy.
+    """
     if not target_name:
         raise ValueError("Target element name cannot be None.")
-    target_element_data = next(
+
+    element_data = next(
         (el for el in ui_blueprint if el.get("logical_name") == target_name), None
     )
-    if not target_element_data:
-        known_elements = {"inventory_container": {"data-test": "inventory-container"}}
-        if target_name in known_elements:
-            target_element_data = known_elements[target_name]
-        else:
-            raise ValueError(
-                f"Logical name '{target_name}' not found in the provided UI blueprint or known elements."
-            )
-    if target_element_data.get("data-test"):
-        selector = f"[data-test='{target_element_data['data-test']}']"
+
+    if not element_data:
+        raise ValueError(f"Logical name '{target_name}' not found in UI blueprint.")
+
+    # Strategy 1: data-test attribute (most reliable)
+    if element_data.get("data_test"):
+        selector = f"[data-test='{element_data['data_test']}']"
         print(f"  [Locator] Using data-test selector: '{selector}'")
         return page.locator(selector)
-    if target_element_data.get("id"):
-        selector = f"#{target_element_data['id']}"
-        print(f"  [Locator] Using primary selector: '{selector}'")
+
+    # Strategy 2: Element ID (reliable if it exists and is static)
+    if element_data.get("id"):
+        selector = f"#{element_data['id']}"
+        print(f"  [Locator] Using ID selector: '{selector}'")
         return page.locator(selector)
+
+    # Strategy 3: Text content (good for buttons, links)
+    if element_data.get("text"):
+        print(f"  [Locator] Using text selector: '{element_data['text']}'")
+        # Use exact match to avoid ambiguity
+        return page.get_by_text(element_data["text"], exact=True)
+
+    # Strategy 4: Placeholder text (good for input fields)
+    if element_data.get("placeholder"):
+        print(
+            f"  [Locator] Using placeholder selector: '{element_data['placeholder']}'"
+        )
+        return page.get_by_placeholder(element_data["placeholder"], exact=True)
+
     raise ValueError(f"Could not determine a stable locator for '{target_name}'.")
 
 
@@ -162,13 +181,12 @@ def run_test_case(test_case_json: dict):
         with sync_playwright() as p:
             context = None
             try:
-                is_live_view = test_case_json.get("is_live_view", False)
-                is_headful_run = not is_docker and is_live_view
                 launch_options = {
-                    "headless": not is_headful_run,
-                    "slow_mo": 100 if is_headful_run else 0,
+                    "headless": IS_HEADLESS,
+                    "slow_mo": 100 if not IS_HEADLESS else 0,
                 }
                 if is_docker:
+                    # These args are necessary for running in a container
                     launch_options["args"] = [
                         "--no-sandbox",
                         "--disable-setuid-sandbox",
@@ -201,7 +219,7 @@ def run_test_case(test_case_json: dict):
                     )
 
                     if action == "VISUAL_VALIDATION":
-                        page.wait_for_load_state("networkidle")
+                        page.wait_for_load_state("networkidle", timeout=10000)
                         baseline_object_name = f"baselines/{run_id}/{target_name}.png"
                         temp_baseline_path = f"debug/temp_baseline_{timestamp_slug}.png"
 
@@ -219,7 +237,9 @@ def run_test_case(test_case_json: dict):
                                 path=temp_baseline_path, threshold=0.2, full_page=True
                             )
 
-                            if visual_status != "FAIL":
+                            if (
+                                visual_status != "FAIL"
+                            ):  # Don't override a previous failure
                                 visual_status = "PASS"
 
                         except S3Error as exc:
@@ -237,26 +257,31 @@ def run_test_case(test_case_json: dict):
                                 if visual_status != "FAIL":
                                     visual_status = "BASELINE_CREATED"
                             else:
-                                raise
+                                raise  # Re-raise other MinIO errors
                         except PlaywrightError:
-                            has_visual_failure = True
+                            # This block executes on visual mismatch
                             visual_status = "FAIL"
-                            failure_image_name = (
-                                f"{artifacts_path}/visual_failure_{target_name}.png"
-                            )
-                            failure_bytes = page.screenshot(full_page=True)
-                            minio_client.put_object(
-                                ARTIFACTS_BUCKET_NAME,
-                                failure_image_name,
-                                io.BytesIO(failure_bytes),
-                                len(failure_bytes),
-                            )
-                            raise
+                            # Only set the visual failure flag if it hasn't been set before
+                            # This ensures we only save one screenshot for the whole run
+                            if not has_visual_failure:
+                                has_visual_failure = True
+                                # --- FIX: Save artifact with a consistent name ---
+                                failure_image_name = (
+                                    f"{artifacts_path}/visual_failure.png"
+                                )
+                                failure_bytes = page.screenshot(full_page=True)
+                                minio_client.put_object(
+                                    ARTIFACTS_BUCKET_NAME,
+                                    failure_image_name,
+                                    io.BytesIO(failure_bytes),
+                                    len(failure_bytes),
+                                )
+                            raise  # Re-raise to trigger the main failure logic
                         finally:
                             if os.path.exists(temp_baseline_path):
                                 os.remove(temp_baseline_path)
-
                     else:
+                        # Use the new robust locator function
                         element_locator = find_element_locator(
                             page, target_name, ui_blueprint
                         )
@@ -267,6 +292,7 @@ def run_test_case(test_case_json: dict):
                             element_locator.click()
                             page.wait_for_load_state("domcontentloaded")
                         elif action == "VERIFY_ELEMENT_VISIBLE":
+                            # This check is already done above, but we keep it for logical clarity
                             expect(element_locator).to_be_visible()
 
                     print(
@@ -286,7 +312,7 @@ def run_test_case(test_case_json: dict):
             except Exception as e:
                 print(f"[FAIL] Test run finished with an error: {e}")
                 status = "FAIL"
-                if has_visual_failure:
+                if has_visual_failure and not failure_reason:
                     failure_reason = (
                         "Visual test failed. Screenshot did not match the baseline."
                     )
@@ -323,8 +349,14 @@ def run_test_case(test_case_json: dict):
                         print(
                             f"  [ERROR] Could not save failure artifacts: {artifact_error}"
                         )
+            finally:
+                if context:
+                    context.close()
+                if "browser" in locals() and browser:
+                    browser.close()
 
         if status == "PASS":
+            # If the test passed but no visual tests were run, mark visual as PASS
             if visual_status == "N/A":
                 visual_status = "PASS"
             send_realtime_update(
@@ -367,12 +399,8 @@ def main():
 
             channel.basic_qos(prefetch_count=1)
 
-            queues_to_listen = []
-            if is_docker:
-                queues_to_listen.append("execution_queue")
-            else:
-                queues_to_listen.append("execution_queue")
-                queues_to_listen.append("live_view_queue")
+            # --- FIX: Agent now listens to both queues regardless of environment ---
+            queues_to_listen = ["execution_queue", "live_view_queue"]
 
             for queue_name in queues_to_listen:
                 channel.queue_declare(queue=queue_name, durable=True)
