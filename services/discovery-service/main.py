@@ -53,7 +53,6 @@ def get_interactive_elements(elements, locators):
     for i in range(locators.count()):
         locator = locators.nth(i)
         try:
-            # Skip invisible elements, which can cause errors
             if not locator.is_visible():
                 continue
 
@@ -62,7 +61,10 @@ def get_interactive_elements(elements, locators):
             element_id = locator.get_attribute("id")
             name = locator.get_attribute("name")
             placeholder = locator.get_attribute("placeholder")
+            
+            # Get richer context for the AI
             aria_label = locator.get_attribute("aria-label")
+            role = locator.get_attribute("role")
             data_test = locator.get_attribute("data-test")
 
             logical_name = (
@@ -73,6 +75,10 @@ def get_interactive_elements(elements, locators):
                 or text.replace(" ", "_")
                 or f"{tag}_{i}"
             )
+            
+            # Remove any characters that could break the JSON or prompt
+            if logical_name:
+                logical_name = logical_name.replace('\n', ' ').strip()
 
             elements.append(
                 {
@@ -82,11 +88,13 @@ def get_interactive_elements(elements, locators):
                     "id": element_id,
                     "name": name,
                     "placeholder": placeholder,
-                    "data_test": data_test,  # Add to the blueprint
+                    # Add the new attributes to the blueprint
+                    "aria_label": aria_label,
+                    "role": role,
+                    "data_test": data_test,
                 }
             )
         except Exception:
-            # Ignore elements that disappear or cause errors during inspection
             continue
 
 

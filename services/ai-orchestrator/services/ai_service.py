@@ -36,7 +36,7 @@ class AIService:
 
     def plan_next_step(self, objective: str, history: list, ui_blueprint: str = None) -> Dict[str, Any]:
         """
-        Analyzes the objective and history to decide the next action (tool use).
+        Analyzes the objective and history to decide the next sequence of actions.
         """
         if not self.model:
             raise RuntimeError("Gemini model is not configured.")
@@ -44,20 +44,19 @@ class AIService:
         prompt = self._build_agent_prompt(objective, history, ui_blueprint)
 
         try:
-            logger.info("Calling Gemini API for agent planning...")
+            logger.info("Calling Gemini API for multi-step planning...")
             response = self.model.generate_content(prompt)
             cleaned_response = (
                 response.text.replace("```json", "").replace("```", "").strip()
             )
             
-            # The response should be a JSON object representing the agent's thought process and next action
             result = json.loads(cleaned_response)
             
-            if "action" in result and "parameters" in result:
-                logger.info(f"Gemini planned next action: {result['action']}")
+            if "steps" in result:
+                logger.info(f"Gemini planned {len(result['steps'])} steps.")
                 return result
             else:
-                logger.error("Gemini response was valid JSON but missed required action/parameters keys.")
+                logger.error("Gemini response was valid JSON but missed the required 'steps' key.")
                 raise ValueError("AI failed to generate a valid action plan.")
 
         except Exception as e:
@@ -65,56 +64,62 @@ class AIService:
             raise ValueError(f"An error occurred during AI planning: {e}")
 
     def _build_agent_prompt(self, objective: str, history: list, ui_blueprint: str = None) -> str:
-        """Constructs the ReAct (Reason+Act) style prompt for the agent."""
+        """Constructs the prompt for multi-step planning."""
         
         history_str = "\n".join(f"- {item}" for item in history)
         blueprint_str = f"""
         **Current UI Blueprint:**
         ```json
-        {ui_blueprint if ui_blueprint else "No UI blueprint available. You must use the 'discover' tool."}
+        {ui_blueprint if ui_blueprint else "No UI blueprint available. You must discover the UI first."}
         ```
         """
 
         return f"""
         You are an autonomous QA Agent. Your goal is to test a web application based on a given objective.
-        You operate in a loop: you think, you choose a tool, and you observe the result.
+        Your task is to generate a JSON object containing a sequence of steps to perform based on the current UI.
+
+        **CRITICAL REASONING INSTRUCTIONS:**
+        1.  **Plan Sequentially:** Analyze the UI blueprint and create a list of all actions you can perform NOW on the current page to progress toward the objective.
+        2.  **Stop at Navigation:** If a step involves a CLICK that will navigate to a new page, that should be the LAST step in your plan. The agent will re-discover the UI on the new page.
+        3.  **Handle Hidden Elements:** If your target (e.g., "Logout") is not in the blueprint, your plan should be to click the container element (e.g., a "Menu" button) to reveal it. This click should be the only step in your plan.
+        4.  **Declare Completion:** If the objective has been fully met, return a single "finish" step.
+        5.  **No Blueprint?:** If no UI blueprint is available, your plan must be a single "discover" step with no parameters.
 
         **Objective:** "{objective}"
 
-        **Tools Available:**
-        1. `discover`: Use this when you are on a new page or need to understand the available UI elements.
-           - Parameters: {{ "url": "The URL of the page to discover" }}
-        2. `execute_step`: Use this to perform an action on a UI element you have already discovered.
-           - Parameters: {{ "step": {{ "action": "CLICK" | "ENTER_TEXT" | "VISUAL_VALIDATION", "target_element": "The logical_name of the element", "data_key": "(optional) The key for the data to use" }} }}
-        3. `finish`: Use this when you have successfully completed all steps required by the objective.
-           - Parameters: {{ "status": "success", "reason": "A brief summary of why the test is complete." }}
-        4. `fail`: Use this if you cannot proceed or determine that the objective cannot be met.
-           - Parameters: {{ "reason": "A clear explanation of why you are failing the test." }}
+        **Action Types:**
+        - `discover`: To scan the current page. (Parameters: {{}})
+        - `execute_step`: To interact with an element. (Parameters: {{ "action": "CLICK" | "ENTER_TEXT", "target_element": "logical_name", ...}})
+        - `finish`: When the entire objective is complete. (Parameters: {{"reason": "summary"}})
 
-        **History of Actions Taken:**
-        {history_str if history_str else "No actions taken yet."}
+        **History of Plans Executed:**
+        {history_str if history_str else "No plans executed yet."}
 
-        {blueprint_str if ui_blueprint else ""}
+        {blueprint_str}
 
         **Your Task:**
-        Based on the objective and the history, think step-by-step and then decide on the single next tool to use.
-        Your output MUST be a single, raw JSON object with your thought process and the chosen action.
+        Generate a single JSON object containing a `thought` and a `steps` array for the next sequence of actions.
 
-        **Example JSON Output:**
+        **Example 1: Logging In**
         {{
-          "thought": "I have just landed on the inventory page. The objective requires me to log out. I need to find the logout button. I don't see it in the current blueprint, but I see a 'Burger Menu' button which likely contains the logout link. I will click the menu button first.",
-          "action": "execute_step",
-          "parameters": {{
-            "step": {{
-              "action": "CLICK",
-              "target_element": "Burger Menu"
-            }}
-          }}
+          "thought": "The UI shows a login form. I can fill in the username, the password, and then click the login button. The login click will navigate, so it will be the last step.",
+          "steps": [
+            {{ "action": "execute_step", "parameters": {{ "action": "ENTER_TEXT", "target_element": "Username", "data_key": "Username" }} }},
+            {{ "action": "execute_step", "parameters": {{ "action": "ENTER_TEXT", "target_element": "Password", "data_key": "Password" }} }},
+            {{ "action": "execute_step", "parameters": {{ "action": "CLICK", "target_element": "Login" }} }}
+          ]
         }}
 
-        Now, generate the JSON for your next action.
-        """
+        **Example 2: Needing to Discover**
+        {{
+            "thought": "I have no UI information for the current page. I must discover it first.",
+            "steps": [
+                {{ "action": "discover", "parameters": {{}} }}
+            ]
+        }}
 
+        Now, generate the JSON for your next plan.
+        """
 
 # Create a single instance of the AI service to be reused
 ai_service = AIService(
