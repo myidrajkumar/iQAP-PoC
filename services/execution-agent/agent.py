@@ -122,29 +122,15 @@ def find_element_locator(page, target_name: str, ui_blueprint: list):
     if not element_data:
         raise ValueError(f"Logical name '{target_name}' not found in UI blueprint.")
 
-    # Strategy 1: data-test attribute (most reliable)
     if element_data.get("data_test"):
         selector = f"[data-test='{element_data['data_test']}']"
-        print(f"  [Locator] Using data-test selector: '{selector}'")
         return page.locator(selector)
-
-    # Strategy 2: Element ID (reliable if it exists and is static)
     if element_data.get("id"):
         selector = f"#{element_data['id']}"
-        print(f"  [Locator] Using ID selector: '{selector}'")
         return page.locator(selector)
-
-    # Strategy 3: Text content (good for buttons, links)
     if element_data.get("text"):
-        print(f"  [Locator] Using text selector: '{element_data['text']}'")
-        # Use exact match to avoid ambiguity
         return page.get_by_text(element_data["text"], exact=True)
-
-    # Strategy 4: Placeholder text (good for input fields)
     if element_data.get("placeholder"):
-        print(
-            f"  [Locator] Using placeholder selector: '{element_data['placeholder']}'"
-        )
         return page.get_by_placeholder(element_data["placeholder"], exact=True)
     raise ValueError(f"Could not determine a stable locator for '{target_name}'.")
 
@@ -212,7 +198,10 @@ def run_test_case(test_case_json: dict):
 
                     if action == "VISUAL_VALIDATION":
                         page.wait_for_load_state("networkidle", timeout=10000)
-                        baseline_object_name = f"baselines/{run_id}/{target_name}.png"
+                        
+                        mode = "headless" if not is_live_view else "headful"
+                        baseline_object_name = f"baselines/{run_id}/{mode}/{target_name}.png"
+                        
                         temp_baseline_path = f"debug/baseline_{timestamp_slug}.png"
                         current_screenshot_path = f"debug/current_{timestamp_slug}.png"
                         
