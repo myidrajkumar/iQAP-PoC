@@ -87,10 +87,6 @@ RABBITMQ_HOST=localhost # Used for local scripts, overridden by docker-compose
 # --- MinIO Object Storage Configuration ---
 MINIO_ROOT_USER=minioadmin
 MINIO_ROOT_PASSWORD=minioadmin
-
-# --- Execution Agent Configuration (for local debugging) ---
-# Set to "false" to run the agent locally with a visible browser
-HEADLESS=true
 ```
 
 ### 3. Build and Run the Stack
@@ -171,12 +167,6 @@ However, for local development and debugging, you might want to see the browser 
     ```
 
 5. **Run the Agent in Headful Mode:**
-    In your `.env` file (in the project root), change the `HEADLESS` variable:
-
-    ```ini
-    # .env file
-    HEADLESS=false
-    ```
 
     Now, run the agent script from your terminal. It will pick up the environment variables from the `.env` file and connect to the Dockerized infrastructure.
 

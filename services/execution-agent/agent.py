@@ -40,8 +40,6 @@ MINIO_ACCESS_KEY = os.getenv("MINIO_ROOT_USER")
 MINIO_SECRET_KEY = os.getenv("MINIO_ROOT_PASSWORD")
 ARTIFACTS_BUCKET_NAME = "test-artifacts"
 
-IS_HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
-
 os.makedirs("debug", exist_ok=True)
 
 try:
@@ -152,8 +150,9 @@ def run_test_case(test_case_json: dict):
     parameter_sets = test_case_json.get("parameters", [{}])
     test_case_id_base = test_case_json.get("test_case_id")
     ui_blueprint = test_case_json.get("ui_blueprint", [])
-    target_url = test_case_json.get("target_url", "https://www.saucedemo.com")
+    target_url = test_case_json.get("target_url")
     db_run_id = test_case_json.get("db_run_id")
+    is_live_view = test_case_json.get("is_live_view", False)
 
     send_realtime_update(
         db_run_id,
@@ -184,8 +183,8 @@ def run_test_case(test_case_json: dict):
             browser = None
             try:
                 launch_options = {
-                    "headless": IS_HEADLESS,
-                    "slow_mo": 100 if not IS_HEADLESS else 0,
+                    "headless": not is_live_view,
+                    "slow_mo": 5 if is_live_view else 0,
                 }
                 if is_docker:
                     launch_options["args"] = [
