@@ -48,26 +48,11 @@ async def lifespan(app: FastAPI):
                     visual_status VARCHAR(50),
                     timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     failure_reason TEXT,
-                    artifacts_path VARCHAR(255)
+                    artifacts_path VARCHAR(255),
+                    visual_artifacts JSONB
                 );
             """
             )
-            # --- Check and add new columns if they don't exist (for backward compatibility) ---
-            cursor.execute(
-                "SELECT column_name FROM information_schema.columns WHERE table_name='test_results' AND column_name='failure_reason'"
-            )
-            if cursor.fetchone() is None:
-                cursor.execute(
-                    "ALTER TABLE test_results ADD COLUMN failure_reason TEXT;"
-                )
-
-            cursor.execute(
-                "SELECT column_name FROM information_schema.columns WHERE table_name='test_results' AND column_name='artifacts_path'"
-            )
-            if cursor.fetchone() is None:
-                cursor.execute(
-                    "ALTER TABLE test_results ADD COLUMN artifacts_path VARCHAR(255);"
-                )
 
             conn.commit()
             cursor.close()

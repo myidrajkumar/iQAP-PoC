@@ -8,6 +8,8 @@ class ConnectionManager:
     def __init__(self):
         # Maps a run_id to a list of active WebSockets for that run
         self.active_connections: Dict[int, List[WebSocket]] = {}
+        # List for general notification clients
+        self.notification_connections: List[WebSocket] = []
 
     async def connect(self, websocket: WebSocket, run_id: int):
         await websocket.accept()
@@ -32,10 +34,35 @@ class ConnectionManager:
             for connection in self.active_connections[run_id]:
                 await connection.send_text(json_message)
 
+    async def connect_notifications(self, websocket: WebSocket):
+        await websocket.accept()
+        self.notification_connections.append(websocket)
+        print("Client connected for general notifications.")
+
+    def disconnect_notifications(self, websocket: WebSocket):
+        self.notification_connections.remove(websocket)
+        print("Client disconnected from general notifications.")
+
+    async def broadcast_notification(self, message: dict):
+        json_message = json.dumps(message)
+        for connection in self.notification_connections:
+            await connection.send_text(json_message)
+
 
 manager = ConnectionManager()
 
 app = FastAPI(title="iQAP Realtime Service")
+
+
+@app.websocket("/ws/notifications")
+async def websocket_notification_endpoint(websocket: WebSocket):
+    await manager.connect_notifications(websocket)
+    try:
+        while True:
+            # Keep the connection alive
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect_notifications(websocket)
 
 
 # --- WebSocket Endpoint for the Frontend ---
@@ -48,6 +75,16 @@ async def websocket_endpoint(websocket: WebSocket, run_id: int):
             await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket, run_id)
+
+
+@app.post("/notify/run-created")
+async def notify_run_created(notification: dict):
+    try:
+        await manager.broadcast_notification(notification)
+        return {"status": "notification sent"}
+    except Exception as e:
+        print(f"Error sending notification: {e}")
+        raise HTTPException(status_code=500, detail="Failed to send notification.")
 
 
 # --- REST Endpoint for the Execution Agent ---

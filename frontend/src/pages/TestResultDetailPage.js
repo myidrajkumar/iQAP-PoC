@@ -33,11 +33,10 @@ const TestResultDetailPage = () => {
 
   const screenshotUrl = `${minioBaseUrl}/${result.artifacts_path}/failure.png`;
   const traceUrl = `${minioBaseUrl}/${result.artifacts_path}/trace.zip`;
-  const visualFailureUrl = `${minioBaseUrl}/${result.artifacts_path}/visual_failure.png`;
 
   return (
     <div className="detail-container">
-      <Link to="/" className="back-link">&larr; Back to Dashboard</Link>
+      <Link to="/runs" className="back-link">&larr; Back to Test Runs</Link>
       <h2>Test Run Details (ID: {result.id})</h2>
       
       <div className="detail-grid">
@@ -77,12 +76,22 @@ const TestResultDetailPage = () => {
         </div>
       )}
 
-      {result.visual_status === 'FAIL' && (
+      {result.visual_status === 'FAIL' && result.visual_artifacts && result.visual_artifacts.length > 0 && (
         <div className="failure-section">
             <h3>Visual Failure Analysis</h3>
-            <p>The screenshot taken during the test did not match the approved baseline.</p>
+            <p>The following visual checks failed because they did not match their approved baselines.</p>
             <div className="artifacts">
-               <a href={visualFailureUrl} target="_blank" rel="noopener noreferrer" className="artifact-link">View Failed Screenshot</a>
+              {result.visual_artifacts.map((artifactName, index) => (
+                <a 
+                  key={index}
+                  href={`${minioBaseUrl}/${result.artifacts_path}/${artifactName}`} 
+                  target="_blank" 
+                  rel="noopener noreferrer" 
+                  className="artifact-link"
+                >
+                  View Failure: {artifactName.replace(/_/g, ' ').replace('.png', '')}
+                </a>
+              ))}
             </div>
         </div>
       )}

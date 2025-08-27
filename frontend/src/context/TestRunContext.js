@@ -1,12 +1,10 @@
-import React, { createContext, useState, useEffect, useCallback, useRef, useContext } from 'react';
+import React, { createContext, useState, useEffect, useCallback, useContext } from 'react';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 
 const reportingApiUrl = process.env.REACT_APP_REPORTING_URL || 'http://localhost:8002';
 const orchestratorApiUrl = process.env.REACT_APP_API_URL || 'http://localhost:8000';
-
-const POLLING_INTERVAL = 3000;
-const POLLING_ATTEMPTS = 20;
+const websocketUrl = process.env.REACT_APP_WEBSOCKET_URL || 'ws://localhost:8003';
 
 const TestRunContext = createContext();
 
@@ -21,9 +19,6 @@ export const TestRunProvider = ({ children }) => {
     const [error, setError] = useState('');
     const [statusMessage, setStatusMessage] = useState('');
     const [testCase, setTestCase] = useState(null);
-    const [isPolling, setIsPolling] = useState(false);
-    const pollingAttemptsRef = useRef(0);
-    const pollingIntervalRef = useRef(null);
     const navigate = useNavigate();
 
     const fetchResults = useCallback(async () => {
@@ -38,37 +33,34 @@ export const TestRunProvider = ({ children }) => {
         }
     }, []);
 
-    const startPolling = useCallback(() => {
-        if (pollingIntervalRef.current) {
-            clearInterval(pollingIntervalRef.current);
-        }
-        pollingAttemptsRef.current = 0;
-        pollingIntervalRef.current = setInterval(async () => {
-            console.log(`Polling... Attempt ${pollingAttemptsRef.current + 1}`);
-            const currentResults = await fetchResults();
-            pollingAttemptsRef.current++;
-            const isStillRunning = currentResults?.some(r => r.status === 'RUNNING');
-            if (!isStillRunning || pollingAttemptsRef.current >= POLLING_ATTEMPTS) {
-                setIsPolling(false);
-            }
-        }, POLLING_INTERVAL);
-    }, [fetchResults]);
-
-    useEffect(() => {
-        if (!isPolling && pollingIntervalRef.current) {
-            clearInterval(pollingIntervalRef.current);
-            console.log("Polling stopped.");
-        }
-    }, [isPolling]);
-
     useEffect(() => {
         fetchResults();
+    }, [fetchResults]);
+
+    useEffect(() => {
+        const socket = new WebSocket(`${websocketUrl}/ws/notifications`);
+
+        socket.onopen = () => {
+            console.log("Notification WebSocket connected.");
+        };
+
+        socket.onmessage = (event) => {
+            const newRun = JSON.parse(event.data);
+            console.log("Received new run notification:", newRun);
+            setResults(prevResults => [newRun, ...prevResults]);
+        };
+
+        socket.onclose = () => {
+            console.log("Notification WebSocket disconnected.");
+        };
+
         return () => {
-            if (pollingIntervalRef.current) {
-                clearInterval(pollingIntervalRef.current);
+            if (socket.readyState === WebSocket.OPEN) {
+                socket.close();
             }
         };
-    }, [fetchResults]);
+    }, []);
+
 
     const generateTest = async (requirement, targetUrl) => {
         setIsLoading(true);
@@ -95,17 +87,10 @@ export const TestRunProvider = ({ children }) => {
             const payload = { ...testCaseToRun, is_live_view: isLiveView };
             await axios.post(`${orchestratorApiUrl}/api/v1/publish-test-case`, payload);
             
-            setStatusMessage('Job published successfully!');
+            setStatusMessage('Job published successfully! The run will appear in the history shortly.');
             setTestCase(null);
             
-            if (isLiveView) {
-                // For live view, we can't know the ID yet, so we go to the main runs page
-                // The user will see their test pop up with a "RUNNING" status
-                navigate('/runs');
-            } else {
-                navigate('/runs');
-            }
-            setTimeout(() => setIsPolling(true), 1500); // Increased delay
+            navigate('/runs');
             
         } catch (err) {
             setError(err.response?.data?.detail || "Failed to publish job.");

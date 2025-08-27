@@ -5,6 +5,7 @@ import time
 import json
 import psycopg2
 from psycopg2.extras import RealDictCursor
+import httpx
 
 load_dotenv()
 
@@ -12,17 +13,19 @@ load_dotenv()
 is_docker = os.environ.get("DOCKER_ENV") == "true"
 if is_docker:
     DB_HOST = "iqap-postgres"
+    REALTIME_SERVICE_URL = "http://realtime-service:8003"
 else:
     DB_HOST = os.getenv("POSTGRES_HOST", "localhost")
+    REALTIME_SERVICE_URL = "http://localhost:8003"
 DB_NAME = os.getenv("POSTGRES_DB")
 DB_USER = os.getenv("POSTGRES_USER")
 DB_PASS = os.getenv("POSTGRES_PASSWORD")
 
 
 def create_initial_record(test_case: dict):
-    """Creates a placeholder record in the DB and returns the new ID."""
+    """Creates a placeholder record in the DB and returns the new record."""
     conn = None
-    new_run_id = None
+    new_run_record = None
     try:
         conn = psycopg2.connect(
             dbname=DB_NAME, user=DB_USER, password=DB_PASS, host=DB_HOST
@@ -39,13 +42,12 @@ def create_initial_record(test_case: dict):
         sql = """
             INSERT INTO test_results (objective, test_case_id, status, timestamp)
             VALUES (%s, %s, 'RUNNING', NOW())
-            RETURNING id;
+            RETURNING *;
         """
         cursor.execute(sql, (objective, test_case_id))
-        result = cursor.fetchone()
-        if result:
-            new_run_id = result["id"]
-            print(f"  [DB] Created initial record with ID: {new_run_id}")
+        new_run_record = cursor.fetchone()
+        if new_run_record:
+            print(f"  [DB] Created initial record with ID: {new_run_record['id']}")
 
         conn.commit()
         cursor.close()
@@ -54,7 +56,7 @@ def create_initial_record(test_case: dict):
     finally:
         if conn is not None:
             conn.close()
-    return new_run_id
+    return new_run_record
 
 
 def main():
@@ -87,15 +89,24 @@ def main():
                         f" [x] Orchestrator received job: {test_case.get('test_case_id')}"
                     )
 
-                    new_run_id = create_initial_record(test_case)
-                    if not new_run_id:
+                    new_run_record = create_initial_record(test_case)
+                    if not new_run_record:
                         print(
                             "[FATAL] Could not create DB record. Acknowledging message to avoid requeue."
                         )
                         ch.basic_ack(delivery_tag=method.delivery_tag)
                         return
+                    
+                    # Convert datetime to string for JSON serialization
+                    new_run_record['timestamp'] = new_run_record['timestamp'].isoformat()
+                    
+                    try:
+                        httpx.post(f"{REALTIME_SERVICE_URL}/notify/run-created", json=new_run_record, timeout=5)
+                        print(f"  [Notification] Sent run creation notice for ID: {new_run_record['id']}")
+                    except httpx.RequestError as e:
+                        print(f"  [Notification] Could not send creation notice: {e}")
 
-                    test_case["db_run_id"] = new_run_id
+                    test_case["db_run_id"] = new_run_record['id']
 
                     is_live_view = test_case.get("is_live_view", False)
                     target_queue = (
@@ -110,7 +121,7 @@ def main():
                         properties=pika.BasicProperties(delivery_mode=2),
                     )
                     print(
-                        f" [>] Orchestrator dispatched job with run_id {new_run_id} to queue: {target_queue}."
+                        f" [>] Orchestrator dispatched job with run_id {new_run_record['id']} to queue: {target_queue}."
                     )
                     ch.basic_ack(delivery_tag=method.delivery_tag)
                 except Exception as e:

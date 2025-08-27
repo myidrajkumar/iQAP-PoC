@@ -73,6 +73,7 @@ def update_result_in_db(
     visual_status: str = "N/A",
     failure_reason: str = None,
     artifacts_path: str = None,
+    visual_artifacts: list = None,
 ):
     if not db_run_id:
         print("  [DB] Error: No db_run_id provided. Cannot update final result.")
@@ -84,10 +85,11 @@ def update_result_in_db(
         )
         cursor = conn.cursor()
         sql = """UPDATE test_results
-                 SET status = %s, visual_status = %s, failure_reason = %s, artifacts_path = %s
+                 SET status = %s, visual_status = %s, failure_reason = %s, artifacts_path = %s, visual_artifacts = %s
                  WHERE id = %s;"""
+        visual_artifacts_json = json.dumps(visual_artifacts) if visual_artifacts else None
         cursor.execute(
-            sql, (status, visual_status, failure_reason, artifacts_path, db_run_id)
+            sql, (status, visual_status, failure_reason, artifacts_path, visual_artifacts_json, db_run_id)
         )
         conn.commit()
         print(f"  [DB] Final result for run ID {db_run_id} saved to database.")
@@ -150,7 +152,7 @@ def run_test_case(test_case_json: dict):
     parameter_sets = test_case_json.get("parameters", [{}])
     test_case_id_base = test_case_json.get("test_case_id")
     ui_blueprint = test_case_json.get("ui_blueprint", [])
-    target_url = test_case_json.get("target_url")
+    target_url = test_case_json.get("target_url", "https://www.saucedemo.com")
     db_run_id = test_case_json.get("db_run_id")
     is_live_view = test_case_json.get("is_live_view", False)
 
@@ -171,12 +173,12 @@ def run_test_case(test_case_json: dict):
         artifacts_path = f"runs/{test_case_id_base}/{run_id_suffix}-{timestamp_slug}"
         run_id = f"{test_case_id_base}-{dataset_name}"
 
-        print(f"\n--- Starting Test Run: {run_id} ---")
+        print(f"\n--- Starting Test Run: {run_id} (Live View: {is_live_view}) ---")
 
         status = "PASS"
         visual_status = "N/A"
         failure_reason = None
-        has_visual_failure = False
+        visual_failures_list = []
 
         with sync_playwright() as p:
             context = None
@@ -184,7 +186,7 @@ def run_test_case(test_case_json: dict):
             try:
                 launch_options = {
                     "headless": not is_live_view,
-                    "slow_mo": 5 if is_live_view else 0,
+                    "slow_mo": 0,
                 }
                 if is_docker:
                     launch_options["args"] = [
@@ -223,7 +225,7 @@ def run_test_case(test_case_json: dict):
                         baseline_object_name = f"baselines/{run_id}/{target_name}.png"
                         temp_baseline_path = f"debug/baseline_{timestamp_slug}.png"
                         current_screenshot_path = f"debug/current_{timestamp_slug}.png"
-
+                        
                         try:
                             minio_client.fget_object(
                                 ARTIFACTS_BUCKET_NAME,
@@ -233,37 +235,28 @@ def run_test_case(test_case_json: dict):
                             print(
                                 f"  [VISUAL] Baseline found for '{target_name}'. Comparing..."
                             )
-                            page.screenshot(
-                                path=current_screenshot_path, full_page=True
-                            )
+                            page.screenshot(path=current_screenshot_path, full_page=True)
 
-                            if not filecmp.cmp(
-                                temp_baseline_path,
-                                current_screenshot_path,
-                                shallow=False,
-                            ):
+                            if not filecmp.cmp(temp_baseline_path, current_screenshot_path, shallow=False):
                                 print("  [VISUAL] Mismatch detected.")
                                 visual_status = "FAIL"
-                                has_visual_failure = True
-                                failure_artifact_name = (
-                                    f"{artifacts_path}/visual_failure.png"
-                                )
+                                
+                                failure_artifact_name = f"visual_failure_step_{step.get('step')}_{target_name}.png"
+                                failure_artifact_path = f"{artifacts_path}/{failure_artifact_name}"
+                                
                                 minio_client.fput_object(
                                     ARTIFACTS_BUCKET_NAME,
-                                    failure_artifact_name,
+                                    failure_artifact_path,
                                     current_screenshot_path,
                                 )
-                                print(
-                                    f"  [VISUAL] Uploaded failed screenshot to {failure_artifact_name}"
-                                )
-                                raise AssertionError(
-                                    f"Visual mismatch for element '{target_name}'."
-                                )
+                                visual_failures_list.append(failure_artifact_name)
+                                print(f"  [VISUAL] Uploaded failed screenshot to {failure_artifact_path}")
+
                             else:
                                 print("  [VISUAL] Screenshots match.")
                                 if visual_status != "FAIL":
                                     visual_status = "PASS"
-
+                        
                         except S3Error as exc:
                             if exc.code == "NoSuchKey":
                                 print(
@@ -275,21 +268,17 @@ def run_test_case(test_case_json: dict):
                                     baseline_object_name,
                                     io.BytesIO(new_baseline_bytes),
                                     len(new_baseline_bytes),
-                                    content_type="image/png",
+                                    content_type='image/png'
                                 )
-                                print(
-                                    f"  [VISUAL] New baseline uploaded to {baseline_object_name}"
-                                )
+                                print(f"  [VISUAL] New baseline uploaded to {baseline_object_name}")
                                 if visual_status != "FAIL":
                                     visual_status = "BASELINE_CREATED"
                             else:
                                 raise
                         finally:
-                            if os.path.exists(temp_baseline_path):
-                                os.remove(temp_baseline_path)
-                            if os.path.exists(current_screenshot_path):
-                                os.remove(current_screenshot_path)
-
+                            if os.path.exists(temp_baseline_path): os.remove(temp_baseline_path)
+                            if os.path.exists(current_screenshot_path): os.remove(current_screenshot_path)
+                    
                     else:
                         element_locator = find_element_locator(
                             page, target_name, ui_blueprint
@@ -315,20 +304,32 @@ def run_test_case(test_case_json: dict):
                         },
                     )
 
+                # No exception means functional pass
+                if visual_status == "FAIL":
+                    # This is not a functional failure, so we don't set status to FAIL here.
+                    # We just record the visual status.
+                    failure_reason = "Visual test failed: One or more screens did not match their approved baselines."
+                    send_realtime_update(
+                        db_run_id,
+                        {"type": "run_end", "status": "PASS", "visual_status": "FAIL", "reason": failure_reason},
+                    )
+                else:
+                    send_realtime_update(
+                        db_run_id,
+                        {"type": "run_end", "status": "PASS", "visual_status": visual_status},
+                    )
+
             except (PlaywrightError, ValueError, AssertionError) as e:
                 print(f"[FAIL] Test run finished with an error: {e}")
                 status = "FAIL"
                 failure_reason = re.sub(r"\s+", " ", str(e).splitlines()[0])
-
-                if has_visual_failure and "Visual mismatch" in failure_reason:
-                    failure_reason = "Visual test failed: The current screen did not match the approved baseline."
 
                 send_realtime_update(
                     db_run_id,
                     {"type": "run_end", "status": "FAIL", "reason": failure_reason},
                 )
 
-                if "page" in locals() and page and minio_client:
+                if 'page' in locals() and page and minio_client:
                     try:
                         screenshot_path = f"{artifacts_path}/failure.png"
                         screenshot_bytes = page.screenshot()
@@ -348,41 +349,32 @@ def run_test_case(test_case_json: dict):
                                 trace_path_remote,
                                 trace_path_local,
                             )
-                            if os.path.exists(trace_path_local):
-                                os.remove(trace_path_local)
+                            if os.path.exists(trace_path_local): os.remove(trace_path_local)
                     except Exception as artifact_error:
                         print(
                             f"  [ERROR] Could not save failure artifacts: {artifact_error}"
                         )
-
+            
             finally:
-                if context:
-                    context.close()
-                if browser:
-                    browser.close()
-
-        if status == "PASS":
-            final_visual_status = visual_status if visual_status != "N/A" else "PASS"
-            send_realtime_update(
-                db_run_id,
-                {
-                    "type": "run_end",
-                    "status": "PASS",
-                    "visual_status": final_visual_status,
-                },
-            )
-        else:  # This path is hit if an error occurred
-            final_visual_status = "FAIL" if has_visual_failure else visual_status
-
-        print(f"--- Test Run Finished with Status: {status} ---")
+                if context: context.close()
+                if browser: browser.close()
+        
+        # Determine final status after the browser context is closed
+        if status == "PASS" and visual_status == "FAIL":
+            final_visual_status = "FAIL"
+        elif status == "PASS":
+            final_visual_status = visual_status if visual_status != 'N/A' else 'PASS'
+        else: # Functional failure
+            final_visual_status = 'FAIL' if visual_failures_list else visual_status
+        
+        print(f"--- Test Run Finished with Status: {status} (Visual: {final_visual_status}) ---")
         update_result_in_db(
             db_run_id=db_run_id,
             status=status,
-            visual_status=visual_status if status == "PASS" else "FAIL",
+            visual_status=final_visual_status,
             failure_reason=failure_reason,
-            artifacts_path=(
-                artifacts_path if status == "FAIL" or has_visual_failure else None
-            ),
+            artifacts_path=(artifacts_path if status == "FAIL" or visual_failures_list else None),
+            visual_artifacts=visual_failures_list,
         )
 
 
@@ -409,7 +401,6 @@ def main():
 
             channel.basic_qos(prefetch_count=1)
 
-            # --- FIX: Agent now listens to both queues regardless of environment ---
             queues_to_listen = ["execution_queue", "live_view_queue"]
 
             for queue_name in queues_to_listen:
